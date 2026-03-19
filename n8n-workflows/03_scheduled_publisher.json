@@ -1,0 +1,84 @@
+{
+  "name": "Scheduled Publisher (Cron)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "query": "SELECT id, business_id FROM content WHERE status = 'scheduled' AND scheduled_at <= NOW() ORDER BY scheduled_at ASC LIMIT 10",
+        "options": {}
+      },
+      "id": "find-due",
+      "name": "Find Due Content",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 300],
+      "credentials": {
+        "postgres": { "id": "POSTGRES_CREDENTIAL_ID", "name": "Content Engine DB" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            { "value1": "={{ $json.length || 0 }}", "operation": "larger", "value2": 0 }
+          ]
+        }
+      },
+      "id": "has-content",
+      "name": "Any Content Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "query": "UPDATE content SET status = 'publishing', updated_at = NOW() WHERE id = '{{ $json.id }}'",
+        "options": {}
+      },
+      "id": "mark-publishing",
+      "name": "Mark as Publishing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [860, 250],
+      "credentials": {
+        "postgres": { "id": "POSTGRES_CREDENTIAL_ID", "name": "Content Engine DB" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL }}/webhook/publish-content",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content_id: $json.id, publish_now: true }) }}",
+        "options": {}
+      },
+      "id": "trigger-publish",
+      "name": "Trigger Publish Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1080, 250]
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": { "main": [[{ "node": "Find Due Content", "type": "main", "index": 0 }]] },
+    "Find Due Content": { "main": [[{ "node": "Any Content Due?", "type": "main", "index": 0 }]] },
+    "Any Content Due?": { "main": [[{ "node": "Mark as Publishing", "type": "main", "index": 0 }], []] },
+    "Mark as Publishing": { "main": [[{ "node": "Trigger Publish Workflow", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "content-engine" }]
+}

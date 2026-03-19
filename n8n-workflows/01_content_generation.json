@@ -1,0 +1,213 @@
+{
+  "name": "Content Generation Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-content",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: Generate Content",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "query": "SELECT b.*, COALESCE(b.brand_summary, b.brand_voice) as context_summary, (SELECT string_agg(cd.extracted_text, E'\\n\\n' ORDER BY cd.uploaded_at DESC) FROM context_documents cd WHERE cd.business_id = b.id AND cd.extracted_text IS NOT NULL AND cd.extracted_text != '[PENDING_EXTRACTION]') as document_context, (SELECT json_agg(json_build_object('url', ri.file_url, 'label', ri.label)) FROM reference_images ri WHERE ri.business_id = b.id) as reference_images FROM businesses b WHERE b.id = '{{ $json.body.business_id }}'",
+        "options": {}
+      },
+      "id": "fetch-business",
+      "name": "Fetch Business Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [420, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Content Engine DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compile the system prompt with business context\nconst business = $input.first().json;\nconst brief = $('Webhook: Generate Content').first().json.body;\n\nconst platforms = brief.platforms || ['x', 'instagram', 'linkedin', 'facebook', 'tiktok', 'youtube'];\n\n// Truncate document context to ~3000 tokens (~12000 chars)\nlet docContext = business.document_context || '';\nif (docContext.length > 12000) {\n  docContext = docContext.substring(0, 12000) + '\\n[...context truncated for length]';\n}\n\nconst systemPrompt = `You are a social media content strategist. You create platform-optimised posts for businesses based on their brand voice and content briefs.\n\n=== BRAND CONTEXT ===\n${business.context_summary || business.brand_voice || 'No brand context provided.'}\n\n=== BUSINESS BACKGROUND ===\n${docContext || 'No additional business documents uploaded.'}\n\n=== PLATFORM RULES ===\nGenerate one post variant per requested platform. Follow these constraints:\n\nX/Twitter (max 280 chars): Punchy, direct. 1-2 hashtags max. CTA as a hook, not a command. Emojis sparingly.\nInstagram (max 2200 chars): Story-driven caption. First line is the hook (visible in feed). Hashtags in a separate block at the end (15-20). Include CTA.\nLinkedIn (max 3000 chars): Professional but human. Insight-led opening. Line breaks for readability. No hashtags in body, 3-5 at the end. Thought leadership tone.\nFacebook (max 63000 chars): Conversational. Slightly longer than X but shorter than LinkedIn. 2-3 hashtags. Can include link with OG preview.\nTikTok (max 4000 chars): Caption for video context. Trend-aware hashtags (5-10). Casual, creator-tone. Include #fyp and niche tags.\nYouTube Shorts: Title (max 100 chars) + description (max 5000 chars). Include #Shorts. SEO-friendly.\n\nOnly generate variants for these platforms: ${platforms.join(', ')}\n\n=== OUTPUT FORMAT ===\nRespond ONLY with valid JSON matching this schema. Do not include markdown fencing or any text outside the JSON:\n{\n  \"x\": { \"text\": \"...\", \"hashtags\": [\"...\"] },\n  \"instagram\": { \"caption\": \"...\", \"hashtags\": [\"...\"] },\n  \"linkedin\": { \"commentary\": \"...\", \"hashtags\": [\"...\"] },\n  \"facebook\": { \"message\": \"...\", \"hashtags\": [\"...\"] },\n  \"tiktok\": { \"title\": \"...\", \"hashtags\": [\"...\"] },\n  \"youtube\": { \"title\": \"...\", \"description\": \"...\", \"tags\": [\"...\"] },\n  \"image_prompt\": \"A suggested image generation prompt based on the content brief and brand style\"\n}\nOnly include keys for the requested platforms.`;\n\nreturn {\n  systemPrompt,\n  brief: brief.brief,\n  business_id: brief.business_id,\n  content_id: brief.content_id,\n  generate_image: brief.generate_image || false,\n  image_prompt_override: brief.image_prompt || null,\n  reference_images: business.reference_images || [],\n  brand_voice: business.context_summary || business.brand_voice || '',\n  platforms\n};"
+      },
+      "id": "compile-prompt",
+      "name": "Compile System Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-opus-4-6', max_tokens: 4096, temperature: 0.7, system: $json.systemPrompt, messages: [{ role: 'user', content: $json.brief }] }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "call-claude",
+      "name": "Generate Content (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTHROPIC_AUTH_ID",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude response and extract variants\nconst response = $input.first().json;\nconst content = response.content[0].text;\n\n// Clean any markdown fencing\nlet clean = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n\nlet variants;\ntry {\n  variants = JSON.parse(clean);\n} catch (e) {\n  return { error: 'Failed to parse Claude response', raw: content };\n}\n\nconst prev = $('Compile System Prompt').first().json;\n\nreturn {\n  content_id: prev.content_id,\n  business_id: prev.business_id,\n  variants,\n  image_prompt: prev.image_prompt_override || variants.image_prompt || null,\n  generate_image: prev.generate_image,\n  reference_images: prev.reference_images,\n  brand_voice: prev.brand_voice\n};"
+      },
+      "id": "parse-response",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $json.generate_image }}", "value2": true }
+          ]
+        }
+      },
+      "id": "check-image",
+      "name": "Generate Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Nano Banana image prompt\nconst data = $input.first().json;\nconst refImages = (data.reference_images || []).filter(i => i && i.url).map(i => i.url).slice(0, 4);\n\nconst prompt = data.image_prompt || \n  `Professional social media image. Brand: ${data.brand_voice}. Topic: ${data.variants?.image_prompt || 'branded content'}. High quality, no text overlay, suitable for Instagram feed.`;\n\nreturn {\n  prompt,\n  image_urls: refImages,\n  content_id: data.content_id,\n  business_id: data.business_id,\n  variants: data.variants,\n  aspect_ratio: '1:1',\n  num_images: 1\n};"
+      },
+      "id": "build-image-prompt",
+      "name": "Build Image Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://queue.fal.run/fal-ai/nano-banana-2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.prompt, image_urls: $json.image_urls.length > 0 ? $json.image_urls : undefined, aspect_ratio: $json.aspect_ratio, num_images: $json.num_images, output_format: 'jpeg' }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "call-nano-banana",
+      "name": "Generate Image (Nano Banana)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1740, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "FAL_AUTH_ID",
+          "name": "fal.ai API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract image URL from Nano Banana response\nconst response = $input.first().json;\nconst prev = $('Build Image Prompt').first().json;\n\nlet imageUrl = null;\nif (response.images && response.images.length > 0) {\n  imageUrl = response.images[0].url;\n} else if (response.output && response.output.images) {\n  imageUrl = response.output.images[0].url;\n}\n\nreturn {\n  content_id: prev.content_id,\n  business_id: prev.business_id,\n  variants: prev.variants,\n  image_url: imageUrl,\n  image_prompt: prev.prompt\n};"
+      },
+      "id": "parse-image",
+      "name": "Parse Image Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// No image path — pass through\nconst data = $input.first().json;\nreturn {\n  content_id: data.content_id,\n  business_id: data.business_id,\n  variants: data.variants,\n  image_url: null,\n  image_prompt: null\n};"
+      },
+      "id": "no-image",
+      "name": "No Image (Pass Through)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 420]
+    },
+    {
+      "parameters": {},
+      "id": "merge-paths",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2180, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "query": "UPDATE content SET variants = '{{ JSON.stringify($json.variants) }}'::jsonb, image_url = {{ $json.image_url ? \"'\" + $json.image_url + \"'\" : 'NULL' }}, image_prompt = {{ $json.image_prompt ? \"'\" + $json.image_prompt.replace(/'/g, \"''\") + \"'\" : 'NULL' }}, status = 'pending_review', updated_at = NOW() WHERE id = '{{ $json.content_id }}'",
+        "options": {}
+      },
+      "id": "save-content",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2400, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Content Engine DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ content_id: $('Parse Claude Response').first().json.content_id, status: 'pending_review', variants: $('Parse Claude Response').first().json.variants, image_url: $json.image_url || null }) }}"
+      },
+      "id": "respond",
+      "name": "Respond to Dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2620, 300]
+    }
+  ],
+  "connections": {
+    "Webhook: Generate Content": { "main": [[{ "node": "Fetch Business Context", "type": "main", "index": 0 }]] },
+    "Fetch Business Context": { "main": [[{ "node": "Compile System Prompt", "type": "main", "index": 0 }]] },
+    "Compile System Prompt": { "main": [[{ "node": "Generate Content (Claude)", "type": "main", "index": 0 }]] },
+    "Generate Content (Claude)": { "main": [[{ "node": "Parse Claude Response", "type": "main", "index": 0 }]] },
+    "Parse Claude Response": { "main": [[{ "node": "Generate Image?", "type": "main", "index": 0 }]] },
+    "Generate Image?": {
+      "main": [
+        [{ "node": "Build Image Prompt", "type": "main", "index": 0 }],
+        [{ "node": "No Image (Pass Through)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Image Prompt": { "main": [[{ "node": "Generate Image (Nano Banana)", "type": "main", "index": 0 }]] },
+    "Generate Image (Nano Banana)": { "main": [[{ "node": "Parse Image Result", "type": "main", "index": 0 }]] },
+    "Parse Image Result": { "main": [[{ "node": "Merge", "type": "main", "index": 0 }]] },
+    "No Image (Pass Through)": { "main": [[{ "node": "Merge", "type": "main", "index": 1 }]] },
+    "Merge": { "main": [[{ "node": "Save to Database", "type": "main", "index": 0 }]] },
+    "Save to Database": { "main": [[{ "node": "Respond to Dashboard", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "content-engine" }]
+}

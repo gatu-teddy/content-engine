@@ -1,0 +1,411 @@
+import { Router } from 'express';
+import { pool } from '../db.js';
+
+const router = Router();
+
+// ═══════════════════════════════════════════════════════════════
+// OAUTH CALLBACK HANDLER
+// Receives authorization code from platform OAuth redirects,
+// exchanges for access tokens, and stores encrypted credentials.
+//
+// Callback URL pattern:
+//   GET /api/oauth/callback/:platform/:businessId?code=xxx&state=xxx
+//
+// Each platform has its own token exchange logic.
+// ═══════════════════════════════════════════════════════════════
+
+
+// ─── Platform-specific token exchange configs ───
+const PLATFORM_CONFIG = {
+  instagram: {
+    token_url: 'https://graph.facebook.com/v21.0/oauth/access_token',
+    // Instagram uses the same token endpoint as Facebook
+    // Short-lived token → exchange for long-lived (60 days)
+    long_lived_url: 'https://graph.facebook.com/v21.0/oauth/access_token',
+    client_id_env: 'FACEBOOK_CLIENT_ID',
+    client_secret_env: 'FACEBOOK_CLIENT_SECRET',
+    token_lifetime_days: 60,
+  },
+  facebook: {
+    token_url: 'https://graph.facebook.com/v21.0/oauth/access_token',
+    long_lived_url: 'https://graph.facebook.com/v21.0/oauth/access_token',
+    client_id_env: 'FACEBOOK_CLIENT_ID',
+    client_secret_env: 'FACEBOOK_CLIENT_SECRET',
+    token_lifetime_days: 60,
+  },
+  linkedin: {
+    token_url: 'https://www.linkedin.com/oauth/v2/accessToken',
+    client_id_env: 'LINKEDIN_CLIENT_ID',
+    client_secret_env: 'LINKEDIN_CLIENT_SECRET',
+    token_lifetime_days: 60,
+  },
+  tiktok: {
+    token_url: 'https://open.tiktokapis.com/v2/oauth/token/',
+    client_id_env: 'TIKTOK_CLIENT_ID',
+    client_secret_env: 'TIKTOK_CLIENT_SECRET',
+    token_lifetime_days: 30, // TikTok tokens are shorter
+  },
+  youtube: {
+    token_url: 'https://oauth2.googleapis.com/token',
+    client_id_env: 'YOUTUBE_CLIENT_ID',
+    client_secret_env: 'YOUTUBE_CLIENT_SECRET',
+    token_lifetime_days: null, // uses refresh_token, no fixed expiry
+  },
+};
+
+
+// ─── Build redirect URI (must match what was sent in authorize URL) ───
+function getRedirectUri(platform, businessId) {
+  const base = process.env.API_BASE_URL || 'https://engine.yourdomain.com';
+  return `${base}/api/oauth/callback/${platform}/${businessId}`;
+}
+
+
+// ─── GET /api/oauth/callback/:platform/:businessId ───
+router.get('/callback/:platform/:businessId', async (req, res) => {
+  const { platform, businessId } = req.params;
+  const { code, error, error_description } = req.query;
+
+  // Handle OAuth denial
+  if (error) {
+    console.error(`[oauth] ${platform} denied: ${error} — ${error_description}`);
+    return res.redirect(
+      `${process.env.DASHBOARD_URL || 'https://app.yourdomain.com'}/connections?error=${encodeURIComponent(error_description || error)}`
+    );
+  }
+
+  if (!code) {
+    return res.status(400).json({ error: 'No authorization code received' });
+  }
+
+  const config = PLATFORM_CONFIG[platform];
+  if (!config) {
+    return res.status(400).json({ error: `Unsupported platform: ${platform}` });
+  }
+
+  try {
+    // Verify business exists
+    const bizResult = await pool.query('SELECT id, display_name FROM businesses WHERE id = $1', [businessId]);
+    if (bizResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Business not found' });
+    }
+
+    const clientId = process.env[config.client_id_env];
+    const clientSecret = process.env[config.client_secret_env];
+
+    if (!clientId || !clientSecret) {
+      console.error(`[oauth] Missing env vars: ${config.client_id_env} or ${config.client_secret_env}`);
+      return res.status(500).json({ error: `OAuth not configured for ${platform}` });
+    }
+
+    const redirectUri = getRedirectUri(platform, businessId);
+
+    // ─── Exchange authorization code for access token ───
+    let tokens;
+
+    if (platform === 'instagram' || platform === 'facebook') {
+      tokens = await exchangeMetaToken(config, clientId, clientSecret, code, redirectUri, platform);
+    } else if (platform === 'linkedin') {
+      tokens = await exchangeLinkedInToken(config, clientId, clientSecret, code, redirectUri);
+    } else if (platform === 'tiktok') {
+      tokens = await exchangeTikTokToken(config, clientId, clientSecret, code, redirectUri);
+    } else if (platform === 'youtube') {
+      tokens = await exchangeGoogleToken(config, clientId, clientSecret, code, redirectUri);
+    }
+
+    if (!tokens || tokens.error) {
+      console.error(`[oauth] Token exchange failed for ${platform}:`, tokens?.error);
+      return res.redirect(
+        `${process.env.DASHBOARD_URL || 'https://app.yourdomain.com'}/connections?error=${encodeURIComponent(tokens?.error || 'Token exchange failed')}`
+      );
+    }
+
+    // ─── Calculate expiry date ───
+    const expiresAt = config.token_lifetime_days
+      ? new Date(Date.now() + config.token_lifetime_days * 24 * 60 * 60 * 1000)
+      : (tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null);
+
+    // ─── Store credentials (upsert) ───
+    // In production, encrypt with pgcrypto before storing
+    const credentialsJson = JSON.stringify(tokens.credentials);
+
+    await pool.query(
+      `INSERT INTO platform_credentials (business_id, platform, credentials_encrypted, token_expires_at, status, last_used_at)
+       VALUES ($1, $2, $3, $4, 'active', NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         credentials_encrypted = $3,
+         token_expires_at = $4,
+         status = 'active',
+         last_used_at = NOW(),
+         updated_at = NOW()`,
+      [businessId, platform, credentialsJson, expiresAt]
+    );
+
+    console.log(`[oauth] ${platform} connected for business ${businessId} (expires: ${expiresAt || 'never'})`);
+
+    // Redirect back to dashboard connections page
+    res.redirect(
+      `${process.env.DASHBOARD_URL || 'https://app.yourdomain.com'}/connections?connected=${platform}`
+    );
+
+  } catch (err) {
+    console.error(`[oauth] Callback error for ${platform}:`, err);
+    res.redirect(
+      `${process.env.DASHBOARD_URL || 'https://app.yourdomain.com'}/connections?error=${encodeURIComponent('Connection failed')}`
+    );
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// PLATFORM-SPECIFIC TOKEN EXCHANGE
+// ═══════════════════════════════════════════════════════════════
+
+async function exchangeMetaToken(config, clientId, clientSecret, code, redirectUri, platform) {
+  // Step 1: Exchange code for short-lived token
+  const tokenUrl = `${config.token_url}?client_id=${clientId}&client_secret=${clientSecret}&code=${code}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+  const resp = await fetch(tokenUrl);
+  const data = await resp.json();
+
+  if (data.error) {
+    return { error: data.error.message || data.error };
+  }
+
+  const shortToken = data.access_token;
+
+  // Step 2: Exchange short-lived for long-lived token (60 days)
+  const longUrl = `${config.long_lived_url}?grant_type=fb_exchange_token&client_id=${clientId}&client_secret=${clientSecret}&fb_exchange_token=${shortToken}`;
+
+  const longResp = await fetch(longUrl);
+  const longData = await longResp.json();
+
+  const accessToken = longData.access_token || shortToken;
+
+  // Step 3: Get user/page info
+  let credentials = { access_token: accessToken };
+
+  if (platform === 'instagram') {
+    // Get IG user ID
+    const meResp = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`);
+    const meData = await meResp.json();
+    const page = meData.data?.[0];
+
+    if (page) {
+      // Get IG account linked to this page
+      const igResp = await fetch(`https://graph.facebook.com/v21.0/${page.id}?fields=instagram_business_account&access_token=${accessToken}`);
+      const igData = await igResp.json();
+
+      credentials = {
+        access_token: page.access_token || accessToken, // Use page token
+        page_id: page.id,
+        page_name: page.name,
+        ig_user_id: igData.instagram_business_account?.id || null,
+      };
+    }
+  } else if (platform === 'facebook') {
+    // Get page access token and page ID
+    const pagesResp = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`);
+    const pagesData = await pagesResp.json();
+    const page = pagesData.data?.[0];
+
+    if (page) {
+      credentials = {
+        access_token: accessToken,
+        page_access_token: page.access_token,
+        page_id: page.id,
+        page_name: page.name,
+      };
+    }
+  }
+
+  return { credentials, expires_in: longData.expires_in || 60 * 24 * 60 * 60 };
+}
+
+
+async function exchangeLinkedInToken(config, clientId, clientSecret, code, redirectUri) {
+  const resp = await fetch(config.token_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) return { error: data.error_description || data.error };
+
+  // Get user info for author URN
+  const userResp = await fetch('https://api.linkedin.com/v2/userinfo', {
+    headers: { 'Authorization': `Bearer ${data.access_token}` },
+  });
+  const userData = await userResp.json();
+
+  return {
+    credentials: {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || null,
+      author_urn: `urn:li:person:${userData.sub}`,
+      name: userData.name,
+    },
+    expires_in: data.expires_in,
+  };
+}
+
+
+async function exchangeTikTokToken(config, clientId, clientSecret, code, redirectUri) {
+  const resp = await fetch(config.token_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_key: clientId,
+      client_secret: clientSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error || data.data?.error_code) {
+    return { error: data.error_description || data.data?.description || 'TikTok auth failed' };
+  }
+
+  const tokenData = data.data || data;
+  return {
+    credentials: {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      open_id: tokenData.open_id,
+    },
+    expires_in: tokenData.expires_in,
+  };
+}
+
+
+async function exchangeGoogleToken(config, clientId, clientSecret, code, redirectUri) {
+  const resp = await fetch(config.token_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) return { error: data.error_description || data.error };
+
+  return {
+    credentials: {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      token_type: data.token_type,
+    },
+    expires_in: data.expires_in,
+  };
+}
+
+
+// ─── Token refresh endpoint (called by cron or manually) ───
+router.post('/refresh/:platform/:businessId', async (req, res) => {
+  const { platform, businessId } = req.params;
+
+  try {
+    const credResult = await pool.query(
+      `SELECT credentials_encrypted FROM platform_credentials WHERE business_id = $1 AND platform = $2`,
+      [businessId, platform]
+    );
+    if (credResult.rows.length === 0) return res.status(404).json({ error: 'No credentials found' });
+
+    const creds = JSON.parse(credResult.rows[0].credentials_encrypted);
+    const config = PLATFORM_CONFIG[platform];
+    if (!config) return res.status(400).json({ error: `Unsupported platform: ${platform}` });
+
+    const clientId = process.env[config.client_id_env];
+    const clientSecret = process.env[config.client_secret_env];
+
+    let newTokens;
+
+    if (platform === 'instagram' || platform === 'facebook') {
+      // Meta long-lived token refresh
+      const refreshUrl = `https://graph.facebook.com/v21.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${clientId}&client_secret=${clientSecret}&fb_exchange_token=${creds.access_token}`;
+      const resp = await fetch(refreshUrl);
+      const data = await resp.json();
+      if (data.error) return res.json({ error: data.error.message });
+      newTokens = { ...creds, access_token: data.access_token };
+    } else if (platform === 'linkedin' && creds.refresh_token) {
+      const resp = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: creds.refresh_token,
+          client_id: clientId,
+          client_secret: clientSecret,
+        }),
+      });
+      const data = await resp.json();
+      if (data.error) return res.json({ error: data.error_description });
+      newTokens = { ...creds, access_token: data.access_token, refresh_token: data.refresh_token || creds.refresh_token };
+    } else if (platform === 'tiktok' && creds.refresh_token) {
+      const resp = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_key: clientId,
+          client_secret: clientSecret,
+          grant_type: 'refresh_token',
+          refresh_token: creds.refresh_token,
+        }),
+      });
+      const data = await resp.json();
+      const tokenData = data.data || data;
+      if (data.error || tokenData.error_code) return res.json({ error: tokenData.description || 'Refresh failed' });
+      newTokens = { ...creds, access_token: tokenData.access_token, refresh_token: tokenData.refresh_token || creds.refresh_token };
+    } else if (platform === 'youtube' && creds.refresh_token) {
+      const resp = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          grant_type: 'refresh_token',
+          refresh_token: creds.refresh_token,
+        }),
+      });
+      const data = await resp.json();
+      if (data.error) return res.json({ error: data.error_description });
+      newTokens = { ...creds, access_token: data.access_token };
+    } else {
+      return res.json({ error: `No refresh mechanism for ${platform} or no refresh token stored` });
+    }
+
+    // Calculate new expiry
+    const expiresAt = config.token_lifetime_days
+      ? new Date(Date.now() + config.token_lifetime_days * 24 * 60 * 60 * 1000)
+      : null;
+
+    await pool.query(
+      `UPDATE platform_credentials SET
+        credentials_encrypted = $1, token_expires_at = $2, status = 'active', updated_at = NOW()
+       WHERE business_id = $3 AND platform = $4`,
+      [JSON.stringify(newTokens), expiresAt, businessId, platform]
+    );
+
+    res.json({ success: true, platform, expires_at: expiresAt });
+  } catch (err) {
+    console.error(`[oauth] Refresh error for ${platform}:`, err);
+    res.status(500).json({ error: 'Token refresh failed' });
+  }
+});
+
+
+export default router;

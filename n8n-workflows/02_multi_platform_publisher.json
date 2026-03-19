@@ -1,0 +1,481 @@
+{
+  "name": "Multi-Platform Publisher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "publish-content",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-publish",
+      "name": "Webhook: Publish",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "query": "SELECT c.*, b.display_name as business_name, b.enabled_platforms FROM content c JOIN businesses b ON b.id = c.business_id WHERE c.id = '{{ $json.body.content_id }}'",
+        "options": {}
+      },
+      "id": "fetch-content",
+      "name": "Fetch Content & Business",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        420,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Content Engine DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "query": "SELECT platform, credentials_encrypted FROM platform_credentials WHERE business_id = '{{ $json.business_id }}' AND status = 'active'",
+        "options": {}
+      },
+      "id": "fetch-creds",
+      "name": "Fetch Platform Credentials",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        640,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Content Engine DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build per-platform publish jobs\nconst content = $('Fetch Content & Business').first().json;\nconst creds = $('Fetch Platform Credentials').all().map(i => i.json);\nconst variants = typeof content.variants === 'string' ? JSON.parse(content.variants) : content.variants;\n\nconst jobs = [];\nconst credMap = {};\ncreds.forEach(c => {\n  try {\n    credMap[c.platform] = JSON.parse(c.credentials_encrypted);\n  } catch(e) {\n    credMap[c.platform] = c.credentials_encrypted;\n  }\n});\n\nfor (const [platform, variant] of Object.entries(variants)) {\n  if (platform === 'image_prompt') continue; // skip meta field\n  if (!credMap[platform]) continue; // skip platforms without credentials\n  \n  jobs.push({\n    content_id: content.id,\n    business_id: content.business_id,\n    platform,\n    variant,\n    credentials: credMap[platform],\n    image_url: content.image_url || null\n  });\n}\n\nreturn jobs;"
+      },
+      "id": "build-jobs",
+      "name": "Build Publish Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "operation": "equals",
+              "value2": "x"
+            }
+          ]
+        }
+      },
+      "id": "route-x",
+      "name": "X/Twitter?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Publish to X/Twitter using API v2\n// OAuth 1.0a signing is handled by n8n credential (configure in n8n UI)\nconst job = $input.first().json;\nconst creds = job.credentials;\nconst text = job.variant.text + (job.variant.hashtags ? ' ' + job.variant.hashtags.map(h => '#' + h).join(' ') : '');\n\ntry {\n  // Use n8n's built-in OAuth 1.0a signing via HTTP Request after this Code node\n  // This prepares the payload; the actual POST is done by the next HTTP Request node\n  // OR do it inline with fetch + oauth-1.0a signing:\n  const crypto = require('crypto');\n  const oauth = {\n    consumer_key: creds.api_key,\n    consumer_secret: creds.api_secret,\n    token: creds.access_token,\n    token_secret: creds.access_token_secret,\n  };\n\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const nonce = crypto.randomBytes(16).toString('hex');\n  const method = 'POST';\n  const url = 'https://api.twitter.com/2/tweets';\n\n  // OAuth 1.0a signature base\n  const params = {\n    oauth_consumer_key: oauth.consumer_key,\n    oauth_nonce: nonce,\n    oauth_signature_method: 'HMAC-SHA1',\n    oauth_timestamp: timestamp,\n    oauth_token: oauth.token,\n    oauth_version: '1.0',\n  };\n\n  const paramStr = Object.keys(params).sort().map(k => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&');\n  const baseStr = `${method}&${encodeURIComponent(url)}&${encodeURIComponent(paramStr)}`;\n  const signingKey = `${encodeURIComponent(oauth.consumer_secret)}&${encodeURIComponent(oauth.token_secret)}`;\n  const signature = crypto.createHmac('sha1', signingKey).update(baseStr).digest('base64');\n\n  const authHeader = `OAuth oauth_consumer_key=\"${encodeURIComponent(oauth.consumer_key)}\", oauth_nonce=\"${nonce}\", oauth_signature=\"${encodeURIComponent(signature)}\", oauth_signature_method=\"HMAC-SHA1\", oauth_timestamp=\"${timestamp}\", oauth_token=\"${encodeURIComponent(oauth.token)}\", oauth_version=\"1.0\"`;\n\n  const response = await fetch(url, {\n    method: 'POST',\n    headers: {\n      'Authorization': authHeader,\n      'Content-Type': 'application/json',\n    },\n    body: JSON.stringify({ text }),\n  });\n\n  const result = await response.json();\n  const postId = result.data?.id;\n\n  return {\n    content_id: job.content_id,\n    business_id: job.business_id,\n    platform: 'x',\n    status: response.ok ? 'success' : 'failed',\n    post_id: postId || null,\n    post_url: postId ? `https://x.com/i/status/${postId}` : null,\n    error_message: response.ok ? null : JSON.stringify(result),\n  };\n} catch (e) {\n  return {\n    content_id: job.content_id,\n    business_id: job.business_id,\n    platform: 'x',\n    status: 'failed',\n    post_id: null,\n    post_url: null,\n    error_message: e.message,\n  };\n}"
+      },
+      "id": "publish-x",
+      "name": "Publish to X",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        50
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "operation": "equals",
+              "value2": "instagram"
+            }
+          ]
+        }
+      },
+      "id": "route-ig",
+      "name": "Instagram?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Instagram Graph API \u2014 Two-step publish\nconst job = $input.first().json;\nconst creds = job.credentials;\nconst caption = (job.variant.caption || '') + '\\n\\n' + (job.variant.hashtags || []).map(h => '#' + h).join(' ');\n\ntry {\n  // Step 1: Create media container\n  const createUrl = `https://graph.instagram.com/v21.0/${creds.ig_user_id}/media`;\n  const createBody = new URLSearchParams({\n    image_url: job.image_url || '',\n    caption: caption,\n    access_token: creds.access_token,\n  });\n\n  const createResp = await fetch(createUrl, { method: 'POST', body: createBody });\n  const createData = await createResp.json();\n\n  if (createData.error || !createData.id) {\n    return {\n      content_id: job.content_id, business_id: job.business_id, platform: 'instagram',\n      status: 'failed', post_id: null, post_url: null,\n      error_message: createData.error?.message || 'Failed to create media container',\n    };\n  }\n\n  // Wait for container to be ready (poll status)\n  let ready = false;\n  for (let i = 0; i < 10; i++) {\n    await new Promise(r => setTimeout(r, 3000));\n    const statusResp = await fetch(`https://graph.instagram.com/v21.0/${createData.id}?fields=status_code&access_token=${creds.access_token}`);\n    const statusData = await statusResp.json();\n    if (statusData.status_code === 'FINISHED') { ready = true; break; }\n    if (statusData.status_code === 'ERROR') {\n      return { content_id: job.content_id, business_id: job.business_id, platform: 'instagram', status: 'failed', error_message: 'Container processing failed' };\n    }\n  }\n\n  if (!ready) {\n    return { content_id: job.content_id, business_id: job.business_id, platform: 'instagram', status: 'failed', error_message: 'Container timed out' };\n  }\n\n  // Step 2: Publish\n  const publishUrl = `https://graph.instagram.com/v21.0/${creds.ig_user_id}/media_publish`;\n  const publishBody = new URLSearchParams({\n    creation_id: createData.id,\n    access_token: creds.access_token,\n  });\n\n  const publishResp = await fetch(publishUrl, { method: 'POST', body: publishBody });\n  const publishData = await publishResp.json();\n\n  return {\n    content_id: job.content_id, business_id: job.business_id, platform: 'instagram',\n    status: publishData.id ? 'success' : 'failed',\n    post_id: publishData.id || null,\n    post_url: publishData.id ? `https://www.instagram.com/p/${publishData.id}/` : null,\n    error_message: publishData.error?.message || null,\n  };\n} catch (e) {\n  return { content_id: job.content_id, business_id: job.business_id, platform: 'instagram', status: 'failed', error_message: e.message };\n}"
+      },
+      "id": "publish-ig",
+      "name": "Publish to Instagram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "operation": "equals",
+              "value2": "linkedin"
+            }
+          ]
+        }
+      },
+      "id": "route-li",
+      "name": "LinkedIn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// LinkedIn Posts API\nconst job = $input.first().json;\nconst creds = job.credentials;\nconst commentary = (job.variant.commentary || job.variant.text || '') + '\\n\\n' + (job.variant.hashtags || []).map(h => '#' + h).join(' ');\n\ntry {\n  const body = {\n    author: creds.author_urn,\n    commentary: commentary,\n    visibility: 'PUBLIC',\n    distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] },\n    lifecycleState: 'PUBLISHED',\n    isReshareDisabledByAuthor: false,\n  };\n\n  const response = await fetch('https://api.linkedin.com/rest/posts', {\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${creds.access_token}`,\n      'Content-Type': 'application/json',\n      'X-Restli-Protocol-Version': '2.0.0',\n      'LinkedIn-Version': '202602',\n    },\n    body: JSON.stringify(body),\n  });\n\n  // LinkedIn returns 201 with x-restli-id header for the post URN\n  const postUrn = response.headers.get('x-restli-id') || '';\n  const postId = postUrn.split(':').pop();\n\n  return {\n    content_id: job.content_id, business_id: job.business_id, platform: 'linkedin',\n    status: response.status === 201 ? 'success' : 'failed',\n    post_id: postUrn || null,\n    post_url: postId ? `https://www.linkedin.com/feed/update/${postUrn}/` : null,\n    error_message: response.status !== 201 ? `HTTP ${response.status}` : null,\n  };\n} catch (e) {\n  return { content_id: job.content_id, business_id: job.business_id, platform: 'linkedin', status: 'failed', error_message: e.message };\n}"
+      },
+      "id": "publish-li",
+      "name": "Publish to LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        350
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "operation": "equals",
+              "value2": "facebook"
+            }
+          ]
+        }
+      },
+      "id": "route-fb",
+      "name": "Facebook?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Facebook Graph API\nconst job = $input.first().json;\nconst creds = job.credentials;\nconst message = (job.variant.message || job.variant.text || '') + '\\n\\n' + (job.variant.hashtags || []).map(h => '#' + h).join(' ');\n\ntry {\n  let url, body;\n\n  if (job.image_url) {\n    // Photo post\n    url = `https://graph.facebook.com/v21.0/${creds.page_id}/photos`;\n    body = new URLSearchParams({\n      url: job.image_url,\n      caption: message,\n      access_token: creds.page_access_token,\n    });\n  } else {\n    // Text-only post\n    url = `https://graph.facebook.com/v21.0/${creds.page_id}/feed`;\n    body = new URLSearchParams({\n      message: message,\n      access_token: creds.page_access_token,\n    });\n  }\n\n  const response = await fetch(url, { method: 'POST', body });\n  const data = await response.json();\n\n  return {\n    content_id: job.content_id, business_id: job.business_id, platform: 'facebook',\n    status: data.id ? 'success' : 'failed',\n    post_id: data.id || data.post_id || null,\n    post_url: data.id ? `https://www.facebook.com/${data.id}` : null,\n    error_message: data.error?.message || null,\n  };\n} catch (e) {\n  return { content_id: job.content_id, business_id: job.business_id, platform: 'facebook', status: 'failed', error_message: e.message };\n}"
+      },
+      "id": "publish-fb",
+      "name": "Publish to Facebook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.platform }}",
+              "operation": "equals",
+              "value2": "tiktok"
+            }
+          ]
+        }
+      },
+      "id": "route-tt",
+      "name": "TikTok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// TikTok Content Posting API \u2014 Photo post (image-based)\nconst job = $input.first().json;\nconst creds = job.credentials;\nconst title = (job.variant.title || '') + ' ' + (job.variant.hashtags || []).map(h => '#' + h).join(' ');\n\ntry {\n  if (!job.image_url) {\n    return { content_id: job.content_id, business_id: job.business_id, platform: 'tiktok', status: 'failed', error_message: 'TikTok requires image or video content' };\n  }\n\n  // TikTok photo publish flow\n  const initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/content/init/', {\n    method: 'POST',\n    headers: {\n      'Authorization': `Bearer ${creds.access_token}`,\n      'Content-Type': 'application/json',\n    },\n    body: JSON.stringify({\n      post_info: {\n        title: title.substring(0, 150),\n        privacy_level: 'SELF_ONLY', // Start private, can be changed\n        disable_comment: false,\n        auto_add_music: true,\n      },\n      source_info: {\n        source: 'PULL_FROM_URL',\n        photo_cover_index: 0,\n        photo_images: [job.image_url],\n      },\n      post_mode: 'DIRECT_POST',\n      media_type: 'PHOTO',\n    }),\n  });\n\n  const initData = await initResp.json();\n  const publishId = initData.data?.publish_id;\n\n  return {\n    content_id: job.content_id, business_id: job.business_id, platform: 'tiktok',\n    status: publishId ? 'success' : 'failed',\n    post_id: publishId || null,\n    post_url: null, // TikTok doesn't return direct URL immediately\n    error_message: initData.error?.message || (publishId ? null : 'No publish_id returned'),\n  };\n} catch (e) {\n  return { content_id: job.content_id, business_id: job.business_id, platform: 'tiktok', status: 'failed', error_message: e.message };\n}"
+      },
+      "id": "publish-tt",
+      "name": "Publish to TikTok",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        650
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "query": "INSERT INTO publish_log (content_id, business_id, platform, status, post_id, post_url, error_message) VALUES ('{{ $json.content_id }}', '{{ $json.business_id }}', '{{ $json.platform }}', '{{ $json.status }}', {{ $json.post_id ? \"'\" + $json.post_id + \"'\" : 'NULL' }}, {{ $json.post_url ? \"'\" + $json.post_url + \"'\" : 'NULL' }}, {{ $json.error_message ? \"'\" + $json.error_message.replace(/'/g, \"''\") + \"'\" : 'NULL' }})",
+        "options": {}
+      },
+      "id": "log-success",
+      "name": "Log Publish Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1800,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "Content Engine DB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'publishing', content_id: $('Fetch Content & Business').first().json.id }) }}"
+      },
+      "id": "respond-publish",
+      "name": "Respond to Dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Publish": {
+      "main": [
+        [
+          {
+            "node": "Fetch Content & Business",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Content & Business": {
+      "main": [
+        [
+          {
+            "node": "Fetch Platform Credentials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Platform Credentials": {
+      "main": [
+        [
+          {
+            "node": "Build Publish Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Publish Jobs": {
+      "main": [
+        [
+          {
+            "node": "X/Twitter?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Instagram?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "LinkedIn?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Facebook?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "TikTok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "X/Twitter?": {
+      "main": [
+        [
+          {
+            "node": "Publish to X",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Instagram?": {
+      "main": [
+        [
+          {
+            "node": "Publish to Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "LinkedIn?": {
+      "main": [
+        [
+          {
+            "node": "Publish to LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Facebook?": {
+      "main": [
+        [
+          {
+            "node": "Publish to Facebook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "TikTok?": {
+      "main": [
+        [
+          {
+            "node": "Publish to TikTok",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Publish to X": {
+      "main": [
+        [
+          {
+            "node": "Log Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Instagram": {
+      "main": [
+        [
+          {
+            "node": "Log Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Log Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Facebook": {
+      "main": [
+        [
+          {
+            "node": "Log Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to TikTok": {
+      "main": [
+        [
+          {
+            "node": "Log Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Publish Result": {
+      "main": [
+        [
+          {
+            "node": "Respond to Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "content-engine"
+    }
+  ]
+}

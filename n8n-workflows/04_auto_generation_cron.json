@@ -1,0 +1,408 @@
+{
+  "name": "04 Auto-Generation Cron",
+  "nodes": [
+    {
+      "name": "Daily 6AM Dubai",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        100,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Fetch Auto Businesses",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        300,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM businesses WHERE automation_mode IN ('full_auto', 'semi_auto') ORDER BY display_name"
+      }
+    },
+    {
+      "name": "Any Businesses?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length || 0 }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Next Template",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        700,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.API_URL || 'http://api:3001' }}/api/templates/next/{{ $json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "Template Due?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.next?.template_id || '' }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Prepare Brief",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Prepare the content brief from template\nconst templateData = $input.first().json.next;\nconst business = $('Fetch Auto Businesses').first().json;\n\nreturn {\n  business_id: business.id,\n  business_name: business.display_name,\n  automation_mode: business.automation_mode,\n  template_id: templateData.template_id,\n  template_name: templateData.name,\n  brief: templateData.compiled_brief,\n  platforms: templateData.platforms,\n  generate_image: true,\n  image_prompt: templateData.image_prompt || null,\n};"
+      }
+    },
+    {
+      "name": "Create Content Record",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.API_URL || 'http://api:3001' }}/api/content",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "business_id",
+              "value": "={{ $json.business_id }}"
+            },
+            {
+              "name": "brief",
+              "value": "={{ $json.brief }}"
+            },
+            {
+              "name": "template_id",
+              "value": "={{ $json.template_id }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Trigger Generation",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1500,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL }}/webhook/generate-content",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "business_id",
+              "value": "={{ $('Prepare Brief').first().json.business_id }}"
+            },
+            {
+              "name": "content_id",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "brief",
+              "value": "={{ $('Prepare Brief').first().json.brief }}"
+            },
+            {
+              "name": "platforms",
+              "value": "={{ $('Prepare Brief').first().json.platforms }}"
+            },
+            {
+              "name": "generate_image",
+              "value": "={{ $('Prepare Brief').first().json.generate_image }}"
+            },
+            {
+              "name": "image_prompt",
+              "value": "={{ $('Prepare Brief').first().json.image_prompt }}"
+            },
+            {
+              "name": "template_id",
+              "value": "={{ $('Prepare Brief').first().json.template_id }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Record Template Fire",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1700,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.API_URL || 'http://api:3001' }}/api/templates/{{ $('Prepare Brief').first().json.template_id }}/fire",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      }
+    },
+    {
+      "name": "Route by Mode",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1900,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Prepare Brief').first().json.automation_mode }}",
+              "operation": "equals",
+              "value2": "full_auto"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Schedule for Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2100,
+        200
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.API_URL || 'http://api:3001' }}/api/content/{{ $('Create Content Record').first().json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "scheduled"
+            },
+            {
+              "name": "scheduled_at",
+              "value": "={{ new Date(Date.now() + 30*60*1000).toISOString() }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Hold for Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2100,
+        400
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.API_URL || 'http://api:3001' }}/api/content/{{ $('Create Content Record').first().json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "pending_review"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Notify Alex (Pending)",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        2300,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// Emit content_pending webhook event to Alex\nconst brief = $('Prepare Brief').first().json;\nconst contentId = $('Create Content Record').first().json.id;\nconst apiUrl = $env.API_URL || 'http://api:3001';\n\ntry {\n  await fetch(apiUrl + '/api/webhooks/test', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ business_id: brief.business_id })\n  });\n} catch(e) {\n  // Non-blocking \u2014 don't fail the workflow if webhook fails\n  console.log('Webhook notification skipped:', e.message);\n}\n\nreturn {\n  status: 'pending_review',\n  business: brief.business_name,\n  template: brief.template_name,\n  brief: brief.brief\n};"
+      }
+    }
+  ],
+  "connections": {
+    "Daily 6AM Dubai": {
+      "main": [
+        [
+          {
+            "node": "Fetch Auto Businesses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Auto Businesses": {
+      "main": [
+        [
+          {
+            "node": "Any Businesses?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Businesses?": {
+      "main": [
+        [
+          {
+            "node": "Get Next Template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Get Next Template": {
+      "main": [
+        [
+          {
+            "node": "Template Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Template Due?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Brief",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Prepare Brief": {
+      "main": [
+        [
+          {
+            "node": "Create Content Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Content Record": {
+      "main": [
+        [
+          {
+            "node": "Trigger Generation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Generation": {
+      "main": [
+        [
+          {
+            "node": "Record Template Fire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Template Fire": {
+      "main": [
+        [
+          {
+            "node": "Route by Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Mode": {
+      "main": [
+        [
+          {
+            "node": "Schedule for Publish",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Hold for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hold for Review": {
+      "main": [
+        [
+          {
+            "node": "Notify Alex (Pending)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "content-engine"
+    }
+  ]
+}
