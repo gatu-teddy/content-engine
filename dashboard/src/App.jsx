@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── CONFIG ───
-const API_URL = window.VITE_API_URL || "http://localhost:3001";
-const N8N_URL = window.VITE_N8N_WEBHOOK_URL || "http://localhost:5678";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const N8N_URL = import.meta.env.VITE_N8N_WEBHOOK_URL || "http://localhost:5678";
 
 // ─── API HELPERS ───
 const getToken = () => localStorage.getItem("ce_token");
