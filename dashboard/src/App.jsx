@@ -233,7 +233,7 @@ function OverviewPage({ business }) {
 function CreatePage({ business, onContentCreated }) {
   const [brief, setBrief] = useState("");
   const [platforms, setPlatforms] = useState(business?.enabled_platforms || []);
-  const [generateImage, setGenerateImage] = useState(true);
+  const [generateImage, setGenerateImage] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
   const [schedule, setSchedule] = useState("");
   const [loading, setLoading] = useState(false);
