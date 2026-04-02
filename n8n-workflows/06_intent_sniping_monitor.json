@@ -1,0 +1,97 @@
+{
+  "name": "06_intent_sniping_monitor",
+  "nodes": [
+    {
+      "name": "Schedule (Every 2h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [200, 300],
+      "parameters": { "rule": { "interval": [{ "field": "hours", "hoursInterval": 2 }] } }
+    },
+    {
+      "name": "Get Intent Businesses",
+      "type": "n8n-nodes-base.postgres",
+      "position": [400, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, display_name, intent_config, reddit_client_id, reddit_client_secret, reddit_username, reddit_password FROM businesses WHERE intent_config->>'mode' != 'off' AND intent_config->'platforms' IS NOT NULL"
+      }
+    },
+    {
+      "name": "Loop Businesses",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [600, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "name": "Scan Reddit",
+      "type": "n8n-nodes-base.code",
+      "position": [800, 200],
+      "parameters": {
+        "jsCode": "const biz = $input.item.json;\nconst config = biz.intent_config;\nif (!config?.platforms?.reddit) return [];\n\nconst keywords = config.keywords || [];\nif (keywords.length === 0) return [];\n\n// Get Reddit OAuth token\nconst tokenRes = await this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://www.reddit.com/api/v1/access_token',\n  auth: { username: biz.reddit_client_id, password: biz.reddit_client_secret },\n  headers: { 'User-Agent': 'ContentEngine/1.0', 'Content-Type': 'application/x-www-form-urlencoded' },\n  body: `grant_type=password&username=${biz.reddit_username}&password=${encodeURIComponent(biz.reddit_password)}`,\n});\n\nif (!tokenRes.access_token) return [];\n\nconst results = [];\nfor (const kw of keywords.slice(0, 5)) {\n  // Search Reddit — max 10 results per keyword, sort by new, last 24h\n  const searchRes = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://oauth.reddit.com/search?q=${encodeURIComponent(kw)}&sort=new&t=day&limit=10&type=link`,\n    headers: { 'Authorization': `Bearer ${tokenRes.access_token}`, 'User-Agent': 'ContentEngine/1.0' },\n  });\n\n  const posts = searchRes?.data?.children || [];\n  for (const post of posts) {\n    const d = post.data;\n    if (d.score < 2) continue; // Skip very low engagement\n    results.push({\n      business_id: biz.id,\n      platform: 'reddit',\n      source_url: `https://reddit.com${d.permalink}`,\n      source_id: d.name, // t3_xxxxx format\n      source_author: d.author,\n      source_text: `${d.title}${d.selftext ? '\\n' + d.selftext.substring(0, 500) : ''}`,\n      source_subreddit: d.subreddit,\n      matched_keywords: [kw],\n    });\n  }\n\n  // Rate limit: wait 1s between searches\n  await new Promise(r => setTimeout(r, 1000));\n}\n\nreturn results.map(r => ({ json: r }));"
+      }
+    },
+    {
+      "name": "Scan X",
+      "type": "n8n-nodes-base.code",
+      "position": [800, 400],
+      "parameters": {
+        "jsCode": "const biz = $input.item.json;\nconst config = biz.intent_config;\nif (!config?.platforms?.x) return [];\n\nconst keywords = config.keywords || [];\nif (keywords.length === 0) return [];\n\n// X search requires Basic tier ($200/mo)\n// Uses app-level Bearer token from env\nconst bearerToken = $env.X_BEARER_TOKEN;\nif (!bearerToken) return []; // X search not configured\n\nconst results = [];\nfor (const kw of keywords.slice(0, 3)) {\n  const searchRes = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `https://api.x.com/2/tweets/search/recent?query=${encodeURIComponent(kw + ' -is:retweet lang:en')}&max_results=10&tweet.fields=author_id,created_at,public_metrics`,\n    headers: { 'Authorization': `Bearer ${bearerToken}` },\n  });\n\n  const tweets = searchRes?.data || [];\n  for (const t of tweets) {\n    if ((t.public_metrics?.like_count || 0) < 1) continue;\n    results.push({\n      business_id: biz.id,\n      platform: 'x',\n      source_url: `https://x.com/i/status/${t.id}`,\n      source_id: t.id,\n      source_author: t.author_id,\n      source_text: t.text,\n      matched_keywords: [kw],\n    });\n  }\n\n  await new Promise(r => setTimeout(r, 1000));\n}\n\nreturn results.map(r => ({ json: r }));"
+      }
+    },
+    {
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "position": [1000, 300],
+      "parameters": { "mode": "append" }
+    },
+    {
+      "name": "Generate Reply (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1200, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": { "x-api-key": "={{$env.ANTHROPIC_API_KEY}}", "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        "body": "={{\n  JSON.stringify({\n    model: 'claude-sonnet-4-20250514',\n    max_tokens: 300,\n    system: `You are a helpful expert replying on ${$json.platform}. Business: ${$json.business_name || 'our business'}. Write a genuinely helpful reply to the post below. Rules:\\n- Be helpful FIRST, promotional NEVER\\n- No links in the reply\\n- No hashtags\\n- Sound like a real human, not a brand\\n- Under 200 words\\n- Answer their actual question\\n- Only mention the business if directly relevant`,\n    messages: [{ role: 'user', content: $json.source_text }]\n  })\n}}"
+      }
+    },
+    {
+      "name": "Score Relevance",
+      "type": "n8n-nodes-base.code",
+      "position": [1400, 300],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst reply = item.content?.[0]?.text || '';\n\n// Simple relevance scoring based on keyword density and reply quality\nconst keywords = item.matched_keywords || [];\nconst textLower = (item.source_text || '').toLowerCase();\nlet score = 0.5; // base\nfor (const kw of keywords) {\n  if (textLower.includes(kw.toLowerCase())) score += 0.1;\n}\n// Question marks suggest someone asking = higher intent\nif (item.source_text?.includes('?')) score += 0.15;\n// Short replies from Claude suggest low relevance\nif (reply.length < 50) score -= 0.2;\nscore = Math.min(1, Math.max(0, score));\n\nreturn [{ json: { ...item, generated_reply: reply, relevance_score: parseFloat(score.toFixed(2)) } }];"
+      }
+    },
+    {
+      "name": "Save Opportunity",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1600, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/intent/opportunities",
+        "headers": { "Authorization": "Bearer {{$env.ENGINE_JWT}}", "Content-Type": "application/json" },
+        "body": "={{ JSON.stringify($json) }}"
+      }
+    },
+    {
+      "name": "Auto-Post (If Enabled)",
+      "type": "n8n-nodes-base.code",
+      "position": [1800, 300],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n// Only auto-post if:\n// 1. Intent mode is 'auto_reply' (not 'approval')\n// 2. Relevance score >= 0.7\n// 3. Daily limit not reached\nif (item.intent_mode === 'auto_reply' && item.relevance_score >= 0.7 && item.created) {\n  // Trigger the post-reply endpoint\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${$env.API_BASE_URL}/api/intent/post-reply/${item.opportunity?.id || item.id}`,\n    headers: { 'Authorization': `Bearer ${$env.ENGINE_JWT}` },\n  });\n  return [{ json: { ...item, auto_posted: res.posted } }];\n}\nreturn [{ json: { ...item, auto_posted: false, reason: 'Held for approval' } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule (Every 2h)": { "main": [[{ "node": "Get Intent Businesses", "type": "main", "index": 0 }]] },
+    "Get Intent Businesses": { "main": [[{ "node": "Loop Businesses", "type": "main", "index": 0 }]] },
+    "Loop Businesses": { "main": [[{ "node": "Scan Reddit", "type": "main", "index": 0 }, { "node": "Scan X", "type": "main", "index": 0 }]] },
+    "Scan Reddit": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "Scan X": { "main": [[{ "node": "Merge Results", "type": "main", "index": 1 }]] },
+    "Merge Results": { "main": [[{ "node": "Generate Reply (Claude)", "type": "main", "index": 0 }]] },
+    "Generate Reply (Claude)": { "main": [[{ "node": "Score Relevance", "type": "main", "index": 0 }]] },
+    "Score Relevance": { "main": [[{ "node": "Save Opportunity", "type": "main", "index": 0 }]] },
+    "Save Opportunity": { "main": [[{ "node": "Auto-Post (If Enabled)", "type": "main", "index": 0 }]] }
+  }
+}

@@ -129,16 +129,24 @@ router.get('/callback/:platform/:businessId', async (req, res) => {
     // In production, encrypt with pgcrypto before storing
     const credentialsJson = JSON.stringify(tokens.credentials);
 
+    // Extract a display handle from the credentials
+    const handle = tokens.credentials.page_name
+      || tokens.credentials.name
+      || (tokens.credentials.ig_user_id ? `@${tokens.credentials.ig_user_id}` : null)
+      || tokens.credentials.open_id
+      || null;
+
     await pool.query(
-      `INSERT INTO platform_credentials (business_id, platform, credentials_encrypted, token_expires_at, status, last_used_at)
-       VALUES ($1, $2, $3, $4, 'active', NOW())
+      `INSERT INTO platform_credentials (business_id, platform, credentials_encrypted, token_expires_at, status, handle, last_used_at)
+       VALUES ($1, $2, $3, $4, 'active', $5, NOW())
        ON CONFLICT (business_id, platform) DO UPDATE SET
          credentials_encrypted = $3,
          token_expires_at = $4,
          status = 'active',
+         handle = $5,
          last_used_at = NOW(),
          updated_at = NOW()`,
-      [businessId, platform, credentialsJson, expiresAt]
+      [businessId, platform, credentialsJson, expiresAt, handle]
     );
 
     console.log(`[oauth] ${platform} connected for business ${businessId} (expires: ${expiresAt || 'never'})`);

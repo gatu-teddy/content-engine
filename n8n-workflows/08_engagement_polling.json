@@ -1,0 +1,51 @@
+{
+  "name": "08_engagement_polling",
+  "nodes": [
+    {
+      "name": "Schedule (Every 4h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [200, 300],
+      "parameters": { "rule": { "interval": [{ "field": "hours", "hoursInterval": 4 }] } }
+    },
+    {
+      "name": "Get Published Content",
+      "type": "n8n-nodes-base.postgres",
+      "position": [400, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.id AS content_id, c.business_id, pl.platform, pl.platform_post_id, b.enabled_platforms FROM content c JOIN publish_log pl ON pl.content_id = c.id JOIN businesses b ON b.id = c.business_id WHERE c.status = 'published' AND pl.status = 'success' AND pl.platform_post_id IS NOT NULL AND c.published_at > NOW() - INTERVAL '7 days' ORDER BY c.published_at DESC LIMIT 100"
+      }
+    },
+    {
+      "name": "Loop Posts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [600, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "name": "Fetch Metrics",
+      "type": "n8n-nodes-base.code",
+      "position": [800, 300],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst platform = item.platform;\nconst postId = item.platform_post_id;\nlet metrics = { impressions: 0, reach: 0, likes: 0, comments: 0, shares: 0, saves: 0, clicks: 0 };\n\nasync function getCred(plat) {\n  const cred = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${$env.API_BASE_URL}/api/businesses/${item.business_id}/credentials`,\n    headers: { 'Authorization': `Bearer ${$env.ENGINE_JWT}` },\n  });\n  return cred?.find(c => c.platform === plat);\n}\n\ntry {\n  if (platform === 'instagram') {\n    const c = await getCred.call(this, 'instagram');\n    if (c?.access_token) {\n      const res = await this.helpers.httpRequest({ method: 'GET', url: `https://graph.facebook.com/v21.0/${postId}/insights?metric=impressions,reach,likes,comments,saved,shares&access_token=${c.access_token}` });\n      for (const m of (res?.data || [])) {\n        if (m.name === 'impressions') metrics.impressions = m.values?.[0]?.value || 0;\n        if (m.name === 'reach') metrics.reach = m.values?.[0]?.value || 0;\n        if (m.name === 'likes') metrics.likes = m.values?.[0]?.value || 0;\n        if (m.name === 'comments') metrics.comments = m.values?.[0]?.value || 0;\n        if (m.name === 'saved') metrics.saves = m.values?.[0]?.value || 0;\n        if (m.name === 'shares') metrics.shares = m.values?.[0]?.value || 0;\n      }\n    }\n  } else if (platform === 'facebook') {\n    const c = await getCred.call(this, 'facebook');\n    if (c?.access_token) {\n      const res = await this.helpers.httpRequest({ method: 'GET', url: `https://graph.facebook.com/v21.0/${postId}?fields=shares,reactions.summary(true),comments.summary(true)&access_token=${c.access_token}` });\n      metrics.shares = res?.shares?.count || 0;\n      metrics.likes = res?.reactions?.summary?.total_count || 0;\n      metrics.comments = res?.comments?.summary?.total_count || 0;\n    }\n  } else if (platform === 'youtube') {\n    if ($env.YOUTUBE_API_KEY) {\n      const res = await this.helpers.httpRequest({ method: 'GET', url: `https://www.googleapis.com/youtube/v3/videos?id=${postId}&part=statistics&key=${$env.YOUTUBE_API_KEY}` });\n      const stats = res?.items?.[0]?.statistics || {};\n      metrics.impressions = parseInt(stats.viewCount || 0);\n      metrics.likes = parseInt(stats.likeCount || 0);\n      metrics.comments = parseInt(stats.commentCount || 0);\n    }\n  } else if (platform === 'tiktok') {\n    const c = await getCred.call(this, 'tiktok');\n    if (c?.access_token) {\n      const res = await this.helpers.httpRequest({ method: 'POST', url: 'https://open.tiktokapis.com/v2/video/query/', headers: { 'Authorization': `Bearer ${c.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ filters: { video_ids: [postId] }, fields: ['like_count', 'comment_count', 'share_count', 'view_count'] }) });\n      const video = res?.data?.videos?.[0] || {};\n      metrics.impressions = video.view_count || 0;\n      metrics.likes = video.like_count || 0;\n      metrics.comments = video.comment_count || 0;\n      metrics.shares = video.share_count || 0;\n    }\n  } else if (platform === 'x') {\n    // X metrics require Basic tier ($200/mo) — uses Bearer token\n    if ($env.X_BEARER_TOKEN) {\n      const res = await this.helpers.httpRequest({ method: 'GET', url: `https://api.x.com/2/tweets/${postId}?tweet.fields=public_metrics`, headers: { 'Authorization': `Bearer ${$env.X_BEARER_TOKEN}` } });\n      const pm = res?.data?.public_metrics || {};\n      metrics.impressions = pm.impression_count || 0;\n      metrics.likes = pm.like_count || 0;\n      metrics.comments = pm.reply_count || 0;\n      metrics.shares = pm.retweet_count || 0;\n      metrics.saves = pm.bookmark_count || 0;\n    }\n  } else if (platform === 'linkedin') {\n    // LinkedIn org share statistics — works for Company Page posts\n    const c = await getCred.call(this, 'linkedin');\n    if (c?.access_token) {\n      const res = await this.helpers.httpRequest({ method: 'GET', url: `https://api.linkedin.com/v2/socialActions/${postId}`, headers: { 'Authorization': `Bearer ${c.access_token}` } });\n      metrics.likes = res?.likesSummary?.totalLikes || 0;\n      metrics.comments = res?.commentsSummary?.totalFirstLevelComments || 0;\n      metrics.shares = res?.sharesSummary?.totalShares || 0;\n    }\n  }\n} catch(e) {\n  console.log(`[engagement] Error fetching ${platform} metrics: ${e.message}`);\n}\n\nreturn [{ json: { content_id: item.content_id, platform: item.platform, platform_post_id: item.platform_post_id, ...metrics } }];"
+      }
+    },
+    {
+      "name": "Save Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1000, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/engagement/snapshot",
+        "headers": { "Authorization": "Bearer {{$env.ENGINE_JWT}}", "Content-Type": "application/json" },
+        "body": "={{ JSON.stringify($json) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule (Every 4h)": { "main": [[{ "node": "Get Published Content", "type": "main", "index": 0 }]] },
+    "Get Published Content": { "main": [[{ "node": "Loop Posts", "type": "main", "index": 0 }]] },
+    "Loop Posts": { "main": [[{ "node": "Fetch Metrics", "type": "main", "index": 0 }]] },
+    "Fetch Metrics": { "main": [[{ "node": "Save Snapshot", "type": "main", "index": 0 }]] }
+  }
+}

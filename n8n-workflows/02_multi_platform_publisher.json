@@ -276,6 +276,19 @@
         2000,
         400
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Auto-trigger dubbing for each configured language\nconst content = $('Fetch Content & Business').first().json;\nconst videoLangs = content.video_languages || [];\nconst hasVideo = !!content.video_url;\n\nif (!hasVideo || videoLangs.length <= 1) {\n  // No video or only source language — skip dubbing\n  return [{ json: { dubbing: 'skipped', reason: hasVideo ? 'only source language' : 'no video' } }];\n}\n\nconst results = [];\nfor (const lang of videoLangs) {\n  if (lang === 'en') continue; // Skip source language\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST',\n      url: `${$env.API_BASE_URL}/api/dubbing/start`,\n      headers: { 'Authorization': `Bearer ${$env.ENGINE_JWT}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ content_id: content.id, target_language: lang }),\n    });\n    results.push({ lang, status: 'started', dubbing_id: res.dubbing_id });\n  } catch(e) {\n    results.push({ lang, status: 'failed', error: e.message });\n  }\n}\nreturn [{ json: { dubbing: 'triggered', jobs: results } }];"
+      },
+      "id": "trigger-dubbing",
+      "name": "Trigger Dubbing (Localisation)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        400
+      ]
     }
   ],
   "connections": {
@@ -463,6 +476,11 @@
         [
           {
             "node": "Respond to Dashboard",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Trigger Dubbing (Localisation)",
             "type": "main",
             "index": 0
           }

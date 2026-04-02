@@ -10,6 +10,11 @@ import alexRoutes from './routes/alex.js';
 import templateRoutes from './routes/templates.js';
 import webhookRoutes from './routes/webhooks.js';
 import oauthRoutes from './routes/oauth.js';
+import intentRoutes from './routes/intent.js';
+import trendingRoutes from './routes/trending.js';
+import engagementRoutes from './routes/engagement.js';
+import scheduleRoutes from './routes/schedule.js';
+import dubbingRoutes from './routes/dubbing.js';
 import { authMiddleware } from './middleware/auth.js';
 
 dotenv.config();
@@ -33,6 +38,11 @@ app.use('/api/uploads', authMiddleware, uploadRoutes);
 app.use('/api/v1/alex', authMiddleware, alexRoutes);
 app.use('/api/templates', authMiddleware, templateRoutes);
 app.use('/api/webhooks', authMiddleware, webhookRoutes);
+app.use('/api/intent', authMiddleware, intentRoutes);
+app.use('/api/trending', authMiddleware, trendingRoutes);
+app.use('/api/engagement', authMiddleware, engagementRoutes);
+app.use('/api/schedule', authMiddleware, scheduleRoutes);
+app.use('/api/dubbing', authMiddleware, dubbingRoutes);
 
 // ─── Error Handler ───
 app.use((err, req, res, next) => {

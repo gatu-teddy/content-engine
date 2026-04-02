@@ -104,7 +104,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id/credentials', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, platform, status, token_expires_at, last_used_at, created_at
+      `SELECT id, platform, status, token_expires_at, handle, last_used_at, created_at
        FROM platform_credentials WHERE business_id = $1`,
       [req.params.id]
     );

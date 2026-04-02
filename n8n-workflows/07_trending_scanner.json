@@ -1,0 +1,88 @@
+{
+  "name": "07_trending_topic_scanner",
+  "nodes": [
+    {
+      "name": "Schedule (Every 6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [200, 300],
+      "parameters": { "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] } }
+    },
+    {
+      "name": "Get Businesses",
+      "type": "n8n-nodes-base.postgres",
+      "position": [400, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, display_name, brand_voice, intent_config, trending_enabled FROM businesses WHERE trending_enabled = true"
+      }
+    },
+    {
+      "name": "Loop Businesses",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [600, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "name": "Scan Reddit Hot",
+      "type": "n8n-nodes-base.code",
+      "position": [800, 200],
+      "parameters": {
+        "jsCode": "const biz = $input.item.json;\nconst config = biz.intent_config || {};\nconst subreddits = [];\n\n// Use discovered subreddits from intent config, or fallback to industry defaults\nconst discovered = config.discovered?.reddit || [];\nfor (const sub of discovered.slice(0, 5)) {\n  subreddits.push(sub.replace('r/', ''));\n}\n\nif (subreddits.length === 0) return [];\n\nconst results = [];\nfor (const sub of subreddits) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://www.reddit.com/r/${sub}/hot.json?limit=10`,\n      headers: { 'User-Agent': 'ContentEngine/1.0' },\n    });\n    const posts = res?.data?.children || [];\n    for (const p of posts) {\n      const d = p.data;\n      if (d.score < 50) continue; // Only trending posts\n      results.push({\n        business_id: biz.id,\n        topic: d.title,\n        source: 'reddit',\n        source_detail: `r/${sub}`,\n        score: d.score,\n        url: `https://reddit.com${d.permalink}`,\n      });\n    }\n  } catch(e) { /* skip failed subreddit */ }\n  await new Promise(r => setTimeout(r, 1000));\n}\n\nreturn results.slice(0, 10).map(r => ({ json: { ...r, business_context: biz.brand_voice } }));"
+      }
+    },
+    {
+      "name": "Score Relevance (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1000, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": { "x-api-key": "={{$env.ANTHROPIC_API_KEY}}", "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        "body": "={{\n  JSON.stringify({\n    model: 'claude-sonnet-4-20250514',\n    max_tokens: 100,\n    system: 'Score how relevant this trending topic is to the business (0.0-1.0). Respond with ONLY a JSON object: {\"score\": 0.X, \"reason\": \"one sentence\"}',\n    messages: [{ role: 'user', content: `Business: ${$json.business_context}\\nTrending topic: ${$json.topic}\\nSource: ${$json.source_detail}` }]\n  })\n}}"
+      }
+    },
+    {
+      "name": "Parse Score",
+      "type": "n8n-nodes-base.code",
+      "position": [1200, 300],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nlet score = 0.5;\ntry {\n  const text = item.content?.[0]?.text || '';\n  const clean = text.replace(/```json|```/g, '').trim();\n  const parsed = JSON.parse(clean);\n  score = parsed.score || 0.5;\n} catch(e) {}\n\nif (score < 0.4) return []; // Skip irrelevant topics\n\nreturn [{ json: {\n  business_id: item.business_id,\n  topic: item.topic,\n  source: item.source,\n  source_detail: item.source_detail,\n  relevance_score: score,\n} }];"
+      }
+    },
+    {
+      "name": "Save Trend",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1400, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/trending",
+        "headers": { "Authorization": "Bearer {{$env.ENGINE_JWT}}", "Content-Type": "application/json" },
+        "body": "={{ JSON.stringify($json) }}"
+      }
+    },
+    {
+      "name": "Scan Google Trends",
+      "type": "n8n-nodes-base.code",
+      "position": [800, 450],
+      "parameters": {
+        "jsCode": "const biz = $input.item.json;\nconst config = biz.intent_config || {};\nconst keywords = config.keywords || [];\nif (keywords.length === 0) return [];\n\n// Use Google Trends via SerpAPI (requires SERPAPI_KEY env var)\n// Falls back gracefully if not configured\nconst apiKey = $env.SERPAPI_KEY;\nif (!apiKey) return []; // Google Trends not configured — Reddit-only mode\n\nconst results = [];\nfor (const kw of keywords.slice(0, 3)) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://serpapi.com/search.json?engine=google_trends&q=${encodeURIComponent(kw)}&data_type=RELATED_QUERIES&api_key=${apiKey}`,\n    });\n    const rising = res?.related_queries?.rising || [];\n    for (const q of rising.slice(0, 3)) {\n      results.push({\n        business_id: biz.id,\n        topic: q.query,\n        source: 'google_trends',\n        source_detail: `Related to: ${kw}`,\n        business_context: biz.brand_voice,\n      });\n    }\n  } catch(e) { /* skip on error */ }\n  await new Promise(r => setTimeout(r, 500));\n}\n\nreturn results.map(r => ({ json: r }));"
+      }
+    },
+    {
+      "name": "Merge Sources",
+      "type": "n8n-nodes-base.merge",
+      "position": [950, 350],
+      "parameters": { "mode": "append" }
+    }
+  ],
+  "connections": {
+    "Schedule (Every 6h)": { "main": [[{ "node": "Get Businesses", "type": "main", "index": 0 }]] },
+    "Get Businesses": { "main": [[{ "node": "Loop Businesses", "type": "main", "index": 0 }]] },
+    "Loop Businesses": { "main": [[{ "node": "Scan Reddit Hot", "type": "main", "index": 0 }, { "node": "Scan Google Trends", "type": "main", "index": 0 }]] },
+    "Scan Reddit Hot": { "main": [[{ "node": "Merge Sources", "type": "main", "index": 0 }]] },
+    "Scan Google Trends": { "main": [[{ "node": "Merge Sources", "type": "main", "index": 1 }]] },
+    "Merge Sources": { "main": [[{ "node": "Score Relevance (Claude)", "type": "main", "index": 0 }]] },
+    "Score Relevance (Claude)": { "main": [[{ "node": "Parse Score", "type": "main", "index": 0 }]] },
+    "Parse Score": { "main": [[{ "node": "Save Trend", "type": "main", "index": 0 }]] }
+  }
+}

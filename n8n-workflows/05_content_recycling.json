@@ -1,0 +1,82 @@
+{
+  "name": "05_content_recycling",
+  "nodes": [
+    {
+      "name": "Daily Cron (7AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [200, 300],
+      "parameters": { "rule": { "interval": [{ "field": "cronExpression", "expression": "0 7 * * *" }] } }
+    },
+    {
+      "name": "Get Recycle Businesses",
+      "type": "n8n-nodes-base.postgres",
+      "position": [400, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT b.id, b.display_name, b.brand_voice, b.recycling_enabled, b.recycling_ratio, b.cadence, b.automation_mode, b.enabled_platforms FROM businesses b WHERE b.recycling_enabled = true AND b.automation_mode != 'manual'"
+      }
+    },
+    {
+      "name": "Loop Businesses",
+      "type": "n8n-nodes-base.splitInBatches",
+      "position": [600, 300],
+      "parameters": { "batchSize": 1 }
+    },
+    {
+      "name": "Find Recyclable Content",
+      "type": "n8n-nodes-base.postgres",
+      "position": [800, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.id, c.brief, c.platforms, c.template_id, ct.performance_score FROM content c LEFT JOIN content_templates ct ON ct.id = c.template_id WHERE c.business_id = '{{$json.id}}' AND c.status = 'published' AND c.published_at < NOW() - INTERVAL '30 days' AND c.recycled_from IS NULL ORDER BY ct.performance_score DESC NULLS LAST, c.published_at DESC LIMIT 5"
+      }
+    },
+    {
+      "name": "Calculate Recycle Count",
+      "type": "n8n-nodes-base.code",
+      "position": [1000, 300],
+      "parameters": {
+        "jsCode": "const biz = $input.item.json;\nconst candidates = $input.all();\nconst ratio = (biz.recycling_ratio || 30) / 100;\n\n// Calculate weekly posts from cadence\nconst cadenceMap = { '3x_daily': 21, '2x_daily': 14, 'daily': 7, '5x_week': 5, '3x_week': 3, '2x_week': 2, 'weekly': 1, 'off': 0 };\nconst cadence = biz.cadence || {};\nconst weeklyTotal = Object.values(cadence).reduce((s, v) => s + (cadenceMap[v] || 0), 0);\nconst recycleCount = Math.round(ratio * weeklyTotal / 7); // per day\n\nif (recycleCount === 0 || candidates.length === 0) return [];\n\n// Pick top N candidates\nconst toRecycle = candidates.slice(0, Math.min(recycleCount, candidates.length));\nreturn toRecycle.map(c => ({ json: { ...c.json, business_id: biz.id, business_voice: biz.brand_voice } }));"
+      }
+    },
+    {
+      "name": "Rewrite (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1200, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "headers": { "x-api-key": "={{$env.ANTHROPIC_API_KEY}}", "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        "body": "={{\n  JSON.stringify({\n    model: 'claude-sonnet-4-20250514',\n    max_tokens: 500,\n    system: `You are rewriting a social media post that performed well. Rewrite it with a completely fresh angle — different hook, different framing, but same core topic. Brand voice: ${$json.business_voice}. Return ONLY the rewritten brief as plain text.`,\n    messages: [{ role: 'user', content: `Original brief: ${$json.brief}` }]\n  })\n}}"
+      }
+    },
+    {
+      "name": "Create Recycled Content",
+      "type": "n8n-nodes-base.code",
+      "position": [1400, 300],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst newBrief = item.content?.[0]?.text || item.brief;\n\n// Trigger content generation workflow with the new brief\n// This creates a new content entry that goes through the normal pipeline\nreturn [{ json: {\n  business_id: item.business_id,\n  brief: newBrief,\n  platforms: item.platforms,\n  template_id: item.template_id,\n  recycled_from: item.id,\n  source: 'recycling',\n} }];"
+      }
+    },
+    {
+      "name": "Trigger Generation",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1600, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/api/content",
+        "headers": { "Authorization": "Bearer {{$env.ENGINE_JWT}}", "Content-Type": "application/json" },
+        "body": "={{ JSON.stringify({ business_id: $json.business_id, brief: $json.brief, platforms: $json.platforms, template_id: $json.template_id, recycled_from: $json.recycled_from, status: 'generating' }) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Daily Cron (7AM)": { "main": [[{ "node": "Get Recycle Businesses", "type": "main", "index": 0 }]] },
+    "Get Recycle Businesses": { "main": [[{ "node": "Loop Businesses", "type": "main", "index": 0 }]] },
+    "Loop Businesses": { "main": [[{ "node": "Find Recyclable Content", "type": "main", "index": 0 }]] },
+    "Find Recyclable Content": { "main": [[{ "node": "Calculate Recycle Count", "type": "main", "index": 0 }]] },
+    "Calculate Recycle Count": { "main": [[{ "node": "Rewrite (Claude)", "type": "main", "index": 0 }]] },
+    "Rewrite (Claude)": { "main": [[{ "node": "Create Recycled Content", "type": "main", "index": 0 }]] },
+    "Create Recycled Content": { "main": [[{ "node": "Trigger Generation", "type": "main", "index": 0 }]] }
+  }
+}

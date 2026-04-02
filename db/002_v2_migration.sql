@@ -21,6 +21,21 @@ ALTER TABLE businesses ADD COLUMN IF NOT EXISTS trending_enabled BOOLEAN DEFAULT
 -- Store previous mode for global pause/resume
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS previous_automation_mode VARCHAR(20);
 
+-- ─── ELEVENLABS / VIDEO CONFIG ───
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS video_enabled_platforms TEXT[] DEFAULT '{}';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS elevenlabs_voice_id VARCHAR(100);
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS music_style VARCHAR(200) DEFAULT 'Luxury ambient — soft piano, aspirational';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS video_duration INTEGER DEFAULT 10;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS video_languages TEXT[] DEFAULT '{en}';
+
+-- ─── PLATFORM CREDENTIALS: add handle column ───
+ALTER TABLE platform_credentials ADD COLUMN IF NOT EXISTS handle VARCHAR(200);
+
+-- ─── CONTENT: add video/audio asset columns ───
+ALTER TABLE content ADD COLUMN IF NOT EXISTS video_url TEXT;
+ALTER TABLE content ADD COLUMN IF NOT EXISTS voiceover_url TEXT;
+ALTER TABLE content ADD COLUMN IF NOT EXISTS music_url TEXT;
+
 -- ─── CONTENT TEMPLATES ───
 CREATE TABLE IF NOT EXISTS content_templates (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
