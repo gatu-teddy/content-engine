@@ -1,5 +1,54 @@
 import { useState, useEffect } from "react";
 
+/* ═══ API ═══ */
+const API_URL = import.meta.env.VITE_API_URL || 'https://content-engine-production-c201.up.railway.app';
+const getJwt = () => localStorage.getItem('ce_jwt');
+const setJwt = t => localStorage.setItem('ce_jwt', t);
+const clearJwt = () => localStorage.removeItem('ce_jwt');
+async function apiFetch(path, opts = {}) {
+  const jwt = getJwt();
+  const res = await fetch(`${API_URL}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}), ...(opts.headers || {}) },
+  });
+  if (res.status === 401) { clearJwt(); window.location.reload(); }
+  return res;
+}
+function dbBizToUi(db, saved = {}) {
+  return {
+    id: db.id,
+    name: db.display_name,
+    voice: db.brand_voice || '',
+    plats: db.enabled_platforms || ['instagram', 'facebook'],
+    pub: parseInt(db.published_count) || 0,
+    sched: parseInt(db.scheduled_count) || 0,
+    pend: parseInt(db.pending_count) || 0,
+    auto: 'manual', imageModel: 'nano_banana_2', videoRatio: {}, voiceId: 'sarah',
+    musicStyle: 'Luxury ambient — soft piano, aspirational', videoDur: 10, videoLangs: ['en'],
+    intent: { mode: 'off', platforms: { reddit: false, x: false }, keywords: [], dailyCap: { reddit: 0, x: 0 }, geo: { country: '', global: true }, discovered: { reddit: [], x: [] }, opportunities: 0, replied: 0 },
+    cadence: Object.fromEntries(Object.keys(PM).map(k => [k, 'off'])),
+    connections: Object.fromEntries(Object.keys(PM).map(k => [k, { status: 'not_connected', handle: '', note: '' }])),
+    ...saved,
+  };
+}
+function credsToBizConnections(creds) {
+  const out = Object.fromEntries(Object.keys(PM).map(k => [k, { status: 'not_connected', handle: '', note: '' }]));
+  for (const c of creds) {
+    if (!PM[c.platform]) continue;
+    const exp = c.token_expires_at ? new Date(c.token_expires_at) : null;
+    const days = exp ? Math.ceil((exp - Date.now()) / 86400000) : null;
+    let status = c.status === 'active' ? 'connected' : 'expired';
+    let note = exp ? (days <= 0 ? 'Expired' : `Expires in ${days} days`) : (c.status === 'active' ? 'No expiry' : '');
+    if (status === 'connected' && days !== null && days <= 7) status = 'expiring';
+    out[c.platform] = { status, handle: c.handle || '', note };
+  }
+  return out;
+}
+const uiStore = {
+  get: id => { try { return JSON.parse(localStorage.getItem('ce_ui') || '{}')[id] || {}; } catch { return {}; } },
+  set: (id, v) => { try { const a = JSON.parse(localStorage.getItem('ce_ui') || '{}'); a[id] = { ...a[id], ...v }; localStorage.setItem('ce_ui', JSON.stringify(a)); } catch {} },
+};
+
 /* ═══ RESPONSIVE HOOK ═══ */
 function useMedia(){
   const[w,setW]=useState(typeof window!=="undefined"?window.innerWidth:1200);
@@ -73,10 +122,10 @@ const Modal=({onClose,width=400,children})=>{
 };
 
 /* ═══ OAUTH MODAL ═══ */
-function OAuthModal({platform,onClose,onComplete}){
+function OAuthModal({platform,bizId,onClose}){
   const{mob}=useMedia();
   const[step,setStep]=useState("login");const pm=PM[platform];const perms=PERMS[platform]||[];
-  const go=()=>{setStep("loading");setTimeout(()=>setStep("success"),1500);setTimeout(()=>{onComplete();onClose()},3200)};
+  const go=async()=>{setStep("loading");try{const r=await apiFetch(`/api/businesses/${bizId}/oauth-url/${platform}`);if(!r.ok){setStep("login");alert("OAuth not configured for this platform. Check API environment variables.");return;}const{url}=await r.json();window.location.href=url;}catch{setStep("login");alert("Failed to start OAuth. Check your connection.");}};
   return(<Modal onClose={onClose} width={460}>
     <div style={{padding:"10px 16px",background:BL,borderBottom:`1px solid ${B}`,...r,gap:6,margin:mob?"-20px -18px 0":"-22px -26px 0",borderRadius:mob?"14px 14px 0 0":"14px 14px 0 0"}}>
       <div style={{...r,gap:6}}>{["#ef4444","#f59e0b","#22c55e"].map((c,i)=><div key={i} style={{width:10,height:10,borderRadius:5,background:c,cursor:i===0?"pointer":"default"}} onClick={i===0?onClose:undefined}/>)}</div>
@@ -436,9 +485,10 @@ function PageConnections({biz,onUpdate}){
   const{mob}=useMedia();
   const[oauthTarget,setOauthTarget]=useState(null);const[disc,setDisc]=useState(null);
   const cn=biz.connections||{};const connected=Object.values(cn).filter(c=>c.status==="connected").length;const warns=Object.values(cn).filter(c=>c.status==="expiring"||c.status==="expired").length;
-  const refresh=p=>{onUpdate({...biz,connections:{...cn,[p]:{...cn[p],status:"refreshing"}}});setTimeout(()=>onUpdate({...biz,connections:{...cn,[p]:{...cn[p],status:"connected",note:"Refreshed — expires in 60 days"}}}),1800)};
-  const oauthDone=()=>{onUpdate({...biz,connections:{...cn,[oauthTarget]:{status:"connected",handle:"@connected",note:"Expires in 60 days"}}});setOauthTarget(null)};
-  const disconnect=p=>{onUpdate({...biz,connections:{...cn,[p]:{status:"not_connected",handle:"",note:""}}});setDisc(null)};
+  const refreshCreds=async()=>{const r=await apiFetch(`/api/businesses/${biz.id}/credentials`);if(r.ok){const creds=await r.json();onUpdate({...biz,connections:credsToBizConnections(creds)});}};
+  useEffect(()=>{const p=new URLSearchParams(window.location.search);const connected=p.get("connected");const err=p.get("error");if(connected||err){window.history.replaceState({},"",window.location.pathname);if(connected)refreshCreds();}}, [biz.id]);
+  const refresh=p=>{onUpdate({...biz,connections:{...cn,[p]:{...cn[p],status:"refreshing"}}});apiFetch(`/api/oauth/refresh/${p}/${biz.id}`,{method:"POST"}).then(()=>refreshCreds());};
+  const disconnect=async p=>{await apiFetch(`/api/businesses/${biz.id}/credentials/${p}`,{method:"DELETE"});onUpdate({...biz,connections:{...cn,[p]:{status:"not_connected",handle:"",note:""}}});setDisc(null)};
   return <div>
     <RHeader title="Connections" subtitle={biz.name}>
       <span style={{fontSize:12,color:M}}>{connected}/6</span>
@@ -465,7 +515,7 @@ function PageConnections({biz,onUpdate}){
       </div>})}
     </div>
     <div style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:BL,fontSize:12,color:U,lineHeight:1.6}}>Tokens are encrypted per-business. OAuth 2.0 tokens expire after 60 days.</div>
-    {oauthTarget&&<OAuthModal platform={oauthTarget} onClose={()=>setOauthTarget(null)} onComplete={oauthDone}/>}
+    {oauthTarget&&<OAuthModal platform={oauthTarget} bizId={biz.id} onClose={()=>setOauthTarget(null)}/>}
     {disc&&<Modal onClose={()=>setDisc(null)} width={380}>
       <div style={{fontSize:16,fontWeight:700,color:T,marginBottom:6}}>Disconnect {PM[disc]?.l}?</div><p style={{fontSize:13,color:M,marginBottom:4}}>Scheduled posts will fail.</p><p style={{fontSize:12,color:"#dc2626",marginBottom:18}}>Requires re-authentication.</p><div style={{...r,gap:8,justifyContent:"flex-end"}}><button onClick={()=>setDisc(null)} style={bt}>Cancel</button><button onClick={()=>disconnect(disc)} style={{...btD,background:"#dc2626"}}>Disconnect</button></div>
     </Modal>}
@@ -880,25 +930,45 @@ function RemoveModal({name,onClose,onConfirm}){
 /* ═══ MAIN APP ═══ */
 export default function App(){
   const{mob,tab}=useMedia();
-  const[loggedIn,setLoggedIn]=useState(true);
-  const[bizList,setBizList]=useState(initBiz);const[bizId,setBizId]=useState(bizList[0].id);const[page,setPage]=useState("home");const[addModal,setAddModal]=useState(false);const[removeModal,setRemoveModal]=useState(false);
+  const[loggedIn,setLoggedIn]=useState(false);
+  const[bizList,setBizList]=useState([]);const[bizId,setBizId]=useState(null);const[page,setPage]=useState("home");const[addModal,setAddModal]=useState(false);const[removeModal,setRemoveModal]=useState(false);
   const[sideOpen,setSideOpen]=useState(false);
+  const[authLoading,setAuthLoading]=useState(true);
+  const[loginErr,setLoginErr]=useState("");
+
+  const loadCreds=async(id,list)=>{const r=await apiFetch(`/api/businesses/${id}/credentials`);if(r.ok){const creds=await r.json();setBizList(prev=>(prev.length?prev:list).map(b=>b.id===id?{...b,connections:credsToBizConnections(creds)}:b));}};
+  const loadBusinesses=async(gotoConnections=false)=>{const r=await apiFetch("/api/businesses");if(!r.ok)return;const data=await r.json();const mapped=data.map(db=>dbBizToUi(db,uiStore.get(db.id)));setBizList(mapped);const first=mapped[0]?.id;setBizId(prev=>prev||(first||null));if(gotoConnections)setPage("connections");for(const b of mapped)loadCreds(b.id,mapped);};
+
+  useEffect(()=>{const p=new URLSearchParams(window.location.search);const connected=p.get("connected");const err=p.get("error");if(connected||err){window.history.replaceState({},"",window.location.pathname);if(connected)setPage("connections");}if(getJwt()){setLoggedIn(true);loadBusinesses(!!connected).finally(()=>setAuthLoading(false));}else{setAuthLoading(false);}}, []);
+
+  const doLogin=async()=>{const em=document.getElementById("ce-email")?.value?.trim();const pw=document.getElementById("ce-pw")?.value;if(!em||!pw){setLoginErr("Enter email and password");return;}setLoginErr("Signing in…");const r=await fetch(`${API_URL}/api/auth/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:em,password:pw})});if(!r.ok){setLoginErr("Invalid email or password");return;}const data=await r.json();setJwt(data.token);setLoggedIn(true);setLoginErr("");setAuthLoading(true);await loadBusinesses();setAuthLoading(false);};
+
+  if(authLoading)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{`.ce-spin{animation:ce-sp .8s linear infinite}@keyframes ce-sp{to{transform:rotate(360deg)}}`}</style><div className="ce-spin" style={{width:28,height:28,border:`3px solid ${B}`,borderTopColor:T,borderRadius:"50%"}}/></div>;
 
   if(!loggedIn)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+    <style>{`.ce-spin{animation:ce-sp .8s linear infinite}@keyframes ce-sp{to{transform:rotate(360deg)}}`}</style>
     <div style={{maxWidth:360,width:"100%",textAlign:"center"}}>
       <div style={{fontSize:20,fontWeight:700,color:T,marginBottom:4}}>Content Engine</div>
       <p style={{fontSize:12,color:U,marginBottom:20}}>Sign in to manage your content</p>
-      <input placeholder="Email" defaultValue="max@example.com" style={{width:"100%",padding:"9px 14px",borderRadius:8,border:`1px solid ${B}`,fontSize:13,marginBottom:8,outline:"none",boxSizing:"border-box"}}/>
-      <input type="password" placeholder="Password" defaultValue="changeme123" style={{width:"100%",padding:"9px 14px",borderRadius:8,border:`1px solid ${B}`,fontSize:13,marginBottom:14,outline:"none",boxSizing:"border-box"}}/>
-      <button onClick={()=>setLoggedIn(true)} style={{...btD,width:"100%",padding:"10px 0"}}>Sign in</button>
+      <input id="ce-email" placeholder="Email" style={{width:"100%",padding:"9px 14px",borderRadius:8,border:`1px solid ${B}`,fontSize:13,marginBottom:8,outline:"none",boxSizing:"border-box"}} onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
+      <input id="ce-pw" type="password" placeholder="Password" style={{width:"100%",padding:"9px 14px",borderRadius:8,border:`1px solid ${B}`,fontSize:13,marginBottom:14,outline:"none",boxSizing:"border-box"}} onKeyDown={e=>e.key==="Enter"&&doLogin()}/>
+      {loginErr&&<p style={{fontSize:12,color:"#dc2626",marginBottom:8}}>{loginErr}</p>}
+      <button onClick={doLogin} style={{...btD,width:"100%",padding:"10px 0"}}>Sign in</button>
     </div>
   </div>;
+
   const biz=bizList.find(b=>b.id===bizId)||bizList[0];
-  const upd=u=>setBizList(p=>p.map(b=>b.id===u.id?u:b));
+  if(!biz)return <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",flexDirection:"column",gap:12}}>
+    <p style={{color:U,fontSize:13}}>No businesses yet.</p>
+    <button onClick={()=>setAddModal(true)} style={btD}>Add business</button>
+    {addModal&&<Modal onClose={()=>setAddModal(false)} width={400}><h2 style={{fontSize:16,fontWeight:700,margin:"0 0 16px",color:T}}>Add business</h2><div style={{marginBottom:12}}><div style={lb}>Name</div><input id="nn" placeholder="e.g. My Coffee Shop" style={{width:"100%",padding:"8px 12px",borderRadius:8,border:`1px solid ${B}`,fontSize:13,outline:"none",boxSizing:"border-box"}}/></div><div style={{marginBottom:12}}><div style={lb}>Brand voice</div><textarea id="nv" placeholder="Tone, audience..." style={{width:"100%",minHeight:56,padding:"8px 12px",borderRadius:8,border:`1px solid ${B}`,fontSize:12,resize:"vertical",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}/></div><div style={{...r,gap:8,justifyContent:"flex-end"}}><button onClick={()=>setAddModal(false)} style={bt}>Cancel</button><button onClick={async()=>{const n=document.getElementById("nn")?.value?.trim();const v=document.getElementById("nv")?.value?.trim();if(!n)return;const slug=n.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+"-"+Date.now();const res=await apiFetch("/api/businesses",{method:"POST",body:JSON.stringify({display_name:n,slug,brand_voice:v||""})});if(!res.ok){alert("Failed to create business");return;}const db=await res.json();const nb=dbBizToUi(db);setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections");}} style={btD}>Add</button></div></Modal>}
+  </div>;
+
+  const upd=u=>{const{id,name,voice,plats,pub,sched,pend,connections,...ui}=u;uiStore.set(u.id,ui);setBizList(p=>p.map(b=>b.id===u.id?u:b));};
   const pc=biz.pend||0;const wc=Object.values(biz.connections||{}).filter(c=>c.status==="expiring"||c.status==="expired").length;const ib=Object.values(biz.intent?.platforms||{}).some(v=>v)?INTENT_OPPS.filter(o=>o.status==="pending").length:0;
   const nav=[{id:"home",label:"Overview",icon:"home"},{id:"create",label:"Create",icon:"spark"},{id:"templates",label:"Templates",icon:"tpl"},{id:"calendar",label:"Calendar",icon:"cal"},{id:"history",label:"History",icon:"clock",badge:pc},{id:"intent",label:"Intent sniping",icon:"target",badge:ib>0?ib:0},{id:"trending",label:"Trending",icon:"trending"},{id:"connections",label:"Connections",icon:"link",dot:wc>0},{id:"vault",label:"Context vault",icon:"folder"},{id:"settings",label:"Settings",icon:"gear"}];
-  const addBiz=(name,voice)=>{const nb={id:"b"+Date.now(),name,voice,plats:["instagram","facebook"],pub:0,sched:0,pend:0,auto:"manual",imageModel:"nano_banana_2",videoRatio:{},voiceId:"sarah",musicStyle:"Luxury ambient — soft piano, aspirational",videoDur:10,videoLangs:["en"],intent:{mode:"off",platforms:{reddit:false,x:false},keywords:[],dailyCap:{reddit:0,x:0},geo:{country:"",global:true},discovered:{reddit:[],x:[]},opportunities:0,replied:0},cadence:Object.fromEntries(Object.keys(PM).map(k=>[k,"off"])),connections:Object.fromEntries(Object.keys(PM).map(k=>[k,{status:"not_connected",handle:"",note:""}]))};setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections")};
-  const removeBiz=()=>{if(bizList.length<=1)return;const nx=bizList.find(b=>b.id!==bizId)?.id;setBizList(p=>p.filter(b=>b.id!==bizId));setBizId(nx);setRemoveModal(false);setPage("home")};
+  const addBiz=async(name,voice)=>{const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+"-"+Date.now();const res=await apiFetch("/api/businesses",{method:"POST",body:JSON.stringify({display_name:name,slug,brand_voice:voice||"",enabled_platforms:["instagram","facebook"]})});if(!res.ok){alert("Failed to create business");return;}const db=await res.json();const nb=dbBizToUi(db);setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections");};
+  const removeBiz=async()=>{if(bizList.length<=1)return;await apiFetch(`/api/businesses/${bizId}`,{method:"DELETE"});const nx=bizList.find(b=>b.id!==bizId)?.id;setBizList(p=>p.filter(b=>b.id!==bizId));setBizId(nx);setRemoveModal(false);setPage("home")};
   const rp=()=>{switch(page){case"home":return <PageHome biz={biz}/>;case"create":return <PageCreate biz={biz}/>;case"templates":return <PageTemplates biz={biz}/>;case"calendar":return <PageCalendar/>;case"history":return <PageHistory/>;case"intent":return <PageIntent biz={biz} onUpdate={upd}/>;case"trending":return <PageTrending biz={biz} onUpdate={upd}/>;case"connections":return <PageConnections biz={biz} onUpdate={upd}/>;case"vault":return <PageVault biz={biz}/>;case"settings":return <PageSettings biz={biz} onUpdate={upd}/>;default:return <PageHome biz={biz}/>}};
   const goPage=(id)=>{setPage(id);setSideOpen(false)};
 
@@ -937,7 +1007,7 @@ export default function App(){
       </nav>
       <div style={{padding:"6px 10px",borderTop:"1px solid #1f2937"}}>
         <div style={{display:"flex",gap:4,marginBottom:4}}><button onClick={()=>setAddModal(true)} style={{flex:1,padding:"3px 0",borderRadius:4,border:"none",background:"transparent",color:"#6b7280",fontSize:10,cursor:"pointer",minHeight:32}}>+ Add</button><button onClick={()=>bizList.length>1&&setRemoveModal(true)} style={{flex:1,padding:"3px 0",borderRadius:4,border:"none",background:"transparent",color:"#6b7280",fontSize:10,cursor:"pointer",opacity:bizList.length<=1?.3:1,minHeight:32}}>Remove</button></div>
-        <button onClick={()=>setLoggedIn(false)} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"6px 8px",borderRadius:6,border:"none",background:"transparent",color:"#9ca3af",fontSize:12,cursor:"pointer",minHeight:36}}><Ic name="out" size={14}/> Sign out</button>
+        <button onClick={()=>{clearJwt();setLoggedIn(false);setBizList([]);setBizId(null);}} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"6px 8px",borderRadius:6,border:"none",background:"transparent",color:"#9ca3af",fontSize:12,cursor:"pointer",minHeight:36}}><Ic name="out" size={14}/> Sign out</button>
       </div>
     </div>}
 

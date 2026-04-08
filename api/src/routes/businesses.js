@@ -140,6 +140,37 @@ router.put('/:id/credentials/:platform', async (req, res) => {
   }
 });
 
+// GET /api/businesses/:id/oauth-url/:platform — Generate OAuth authorization URL
+router.get('/:id/oauth-url/:platform', async (req, res) => {
+  const { id, platform } = req.params;
+  try {
+    const bizResult = await pool.query('SELECT id FROM businesses WHERE id = $1 AND owner_id = $2', [id, req.user.id]);
+    if (bizResult.rows.length === 0) return res.status(404).json({ error: 'Business not found' });
+
+    const OAUTH_URLS = {
+      instagram: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=instagram_basic,instagram_content_publish,instagram_manage_insights&response_type=code',
+      facebook: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=pages_manage_posts,pages_read_engagement,pages_show_list&response_type=code',
+      linkedin: 'https://www.linkedin.com/oauth/v2/authorization?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=openid%20profile%20w_member_social&response_type=code',
+      tiktok: 'https://www.tiktok.com/v2/auth/authorize/?client_key={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=user.info.basic,video.publish&response_type=code',
+      youtube: 'https://accounts.google.com/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=https://www.googleapis.com/auth/youtube.upload&response_type=code&access_type=offline',
+    };
+
+    const templateUrl = OAUTH_URLS[platform];
+    if (!templateUrl) return res.status(400).json({ error: `Unsupported platform: ${platform}` });
+
+    const CLIENT_ID_MAP = { instagram: 'FACEBOOK_CLIENT_ID', facebook: 'FACEBOOK_CLIENT_ID', linkedin: 'LINKEDIN_CLIENT_ID', tiktok: 'TIKTOK_CLIENT_ID', youtube: 'YOUTUBE_CLIENT_ID' };
+    const clientId = process.env[CLIENT_ID_MAP[platform]] || process.env[`${platform.toUpperCase()}_CLIENT_ID`] || 'NOT_CONFIGURED';
+    const base = process.env.API_BASE_URL || 'https://engine.yourdomain.com';
+    const redirectUri = encodeURIComponent(`${base}/api/oauth/callback/${platform}/${id}`);
+    const url = templateUrl.replace('{CLIENT_ID}', clientId).replace('{REDIRECT_URI}', redirectUri);
+
+    res.json({ url, platform, business_id: id });
+  } catch (err) {
+    console.error('OAuth URL error:', err);
+    res.status(500).json({ error: 'Failed to generate OAuth URL' });
+  }
+});
+
 // DELETE /api/businesses/:id/credentials/:platform
 router.delete('/:id/credentials/:platform', async (req, res) => {
   try {
