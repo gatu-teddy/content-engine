@@ -148,7 +148,7 @@ router.get('/:id/oauth-url/:platform', async (req, res) => {
     if (bizResult.rows.length === 0) return res.status(404).json({ error: 'Business not found' });
 
     const OAUTH_URLS = {
-      instagram: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights,pages_show_list&response_type=code',
+      instagram: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=instagram_basic,instagram_content_publishing,pages_read_engagement,pages_show_list,business_management&response_type=code',
       facebook: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=pages_manage_posts,pages_read_engagement,pages_show_list&response_type=code',
       linkedin: 'https://www.linkedin.com/oauth/v2/authorization?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=openid%20profile%20w_member_social&response_type=code',
       tiktok: 'https://www.tiktok.com/v2/auth/authorize/?client_key={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=user.info.basic,video.publish&response_type=code',
