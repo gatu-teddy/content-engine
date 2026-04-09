@@ -486,7 +486,7 @@ function PageConnections({biz,onUpdate}){
   const[oauthTarget,setOauthTarget]=useState(null);const[disc,setDisc]=useState(null);
   const cn=biz.connections||{};const connected=Object.values(cn).filter(c=>c.status==="connected").length;const warns=Object.values(cn).filter(c=>c.status==="expiring"||c.status==="expired").length;
   const refreshCreds=async()=>{const r=await apiFetch(`/api/businesses/${biz.id}/credentials`);if(r.ok){const creds=await r.json();onUpdate({...biz,connections:credsToBizConnections(creds)});}};
-  useEffect(()=>{const p=new URLSearchParams(window.location.search);const connected=p.get("connected");const err=p.get("error");if(connected||err){window.history.replaceState({},"",window.location.pathname);if(connected)refreshCreds();}}, [biz.id]);
+  useEffect(()=>{refreshCreds();const p=new URLSearchParams(window.location.search);if(p.get("connected")||p.get("error"))window.history.replaceState({},"",window.location.pathname);}, [biz.id]);
   const refresh=p=>{onUpdate({...biz,connections:{...cn,[p]:{...cn[p],status:"refreshing"}}});apiFetch(`/api/oauth/refresh/${p}/${biz.id}`,{method:"POST"}).then(()=>refreshCreds());};
   const disconnect=async p=>{await apiFetch(`/api/businesses/${biz.id}/credentials/${p}`,{method:"DELETE"});onUpdate({...biz,connections:{...cn,[p]:{status:"not_connected",handle:"",note:""}}});setDisc(null)};
   return <div>
