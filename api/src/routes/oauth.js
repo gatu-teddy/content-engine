@@ -120,13 +120,25 @@ router.get('/callback/:platform/:businessId', async (req, res) => {
       );
     }
 
+    // ─── For Meta platforms with multiple pages, redirect to page picker ───
+    if ((platform === 'instagram' || platform === 'facebook') && tokens.all_pages?.length > 1) {
+      const pickToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      await pool.query(
+        `INSERT INTO oauth_pending (token, business_id, platform, pages_json, access_token, expires_at)
+         VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '10 minutes')`,
+        [pickToken, businessId, platform, JSON.stringify(tokens.all_pages), tokens.long_lived_token]
+      );
+      return res.redirect(
+        `${process.env.DASHBOARD_URL || 'https://app.yourdomain.com'}/connections?pick=${pickToken}&platform=${platform}&business=${businessId}`
+      );
+    }
+
     // ─── Calculate expiry date ───
     const expiresAt = config.token_lifetime_days
       ? new Date(Date.now() + config.token_lifetime_days * 24 * 60 * 60 * 1000)
       : (tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null);
 
     // ─── Store credentials (upsert) ───
-    // In production, encrypt with pgcrypto before storing
     const credentialsJson = JSON.stringify(tokens.credentials);
 
     // Extract a display handle from the credentials
@@ -190,34 +202,40 @@ async function exchangeMetaToken(config, clientId, clientSecret, code, redirectU
 
   const accessToken = longData.access_token || shortToken;
 
-  // Step 3: Get user/page info
+  // Step 3: Get all pages the user manages
+  const pagesResp = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`);
+  const pagesData = await pagesResp.json();
+  const pages = pagesData.data || [];
+
+  // If multiple pages, return them all for picker
+  if (pages.length > 1) {
+    // For instagram, fetch IG accounts for each page so picker can show them
+    let enrichedPages = pages;
+    if (platform === 'instagram') {
+      enrichedPages = await Promise.all(pages.map(async p => {
+        const igResp = await fetch(`https://graph.facebook.com/v21.0/${p.id}?fields=instagram_business_account&access_token=${accessToken}`);
+        const igData = await igResp.json();
+        return { ...p, ig_user_id: igData.instagram_business_account?.id || null };
+      }));
+    }
+    return { all_pages: enrichedPages, long_lived_token: accessToken, expires_in: longData.expires_in || 60 * 24 * 60 * 60 };
+  }
+
+  // Single page — build credentials directly
+  const page = pages[0];
   let credentials = { access_token: accessToken };
 
-  if (platform === 'instagram') {
-    // Get IG user ID
-    const meResp = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`);
-    const meData = await meResp.json();
-    const page = meData.data?.[0];
-
-    if (page) {
-      // Get IG account linked to this page
+  if (page) {
+    if (platform === 'instagram') {
       const igResp = await fetch(`https://graph.facebook.com/v21.0/${page.id}?fields=instagram_business_account&access_token=${accessToken}`);
       const igData = await igResp.json();
-
       credentials = {
-        access_token: page.access_token || accessToken, // Use page token
+        access_token: page.access_token || accessToken,
         page_id: page.id,
         page_name: page.name,
         ig_user_id: igData.instagram_business_account?.id || null,
       };
-    }
-  } else if (platform === 'facebook') {
-    // Get page access token and page ID
-    const pagesResp = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${accessToken}`);
-    const pagesData = await pagesResp.json();
-    const page = pagesData.data?.[0];
-
-    if (page) {
+    } else {
       credentials = {
         access_token: accessToken,
         page_access_token: page.access_token,
@@ -321,6 +339,74 @@ async function exchangeGoogleToken(config, clientId, clientSecret, code, redirec
   };
 }
 
+
+// ─── GET /api/oauth/pending/:token — fetch pages for picker ───
+router.get('/pending/:token', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT business_id, platform, pages_json FROM oauth_pending WHERE token = $1 AND expires_at > NOW()`,
+      [req.params.token]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Token expired or not found' });
+    const row = result.rows[0];
+    res.json({ business_id: row.business_id, platform: row.platform, pages: JSON.parse(row.pages_json) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch pending OAuth' });
+  }
+});
+
+// ─── POST /api/oauth/select-page — finalize page selection ───
+router.post('/select-page', async (req, res) => {
+  const { token, page_id } = req.body;
+  if (!token || !page_id) return res.status(400).json({ error: 'token and page_id required' });
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM oauth_pending WHERE token = $1 AND expires_at > NOW()`,
+      [token]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Token expired or not found' });
+
+    const { business_id, platform, pages_json, access_token } = result.rows[0];
+    const pages = JSON.parse(pages_json);
+    const page = pages.find(p => p.id === page_id);
+    if (!page) return res.status(400).json({ error: 'Page not found' });
+
+    // Build credentials for chosen page
+    let credentials;
+    if (platform === 'instagram') {
+      let ig_user_id = page.ig_user_id || null;
+      if (!ig_user_id) {
+        const igResp = await fetch(`https://graph.facebook.com/v21.0/${page.id}?fields=instagram_business_account&access_token=${access_token}`);
+        const igData = await igResp.json();
+        ig_user_id = igData.instagram_business_account?.id || null;
+      }
+      credentials = { access_token: page.access_token || access_token, page_id: page.id, page_name: page.name, ig_user_id };
+    } else {
+      credentials = { access_token, page_access_token: page.access_token, page_id: page.id, page_name: page.name };
+    }
+
+    const handle = page.name || null;
+    const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+
+    await pool.query(
+      `INSERT INTO platform_credentials (business_id, platform, credentials_encrypted, token_expires_at, status, handle, last_used_at)
+       VALUES ($1, $2, $3, $4, 'active', $5, NOW())
+       ON CONFLICT (business_id, platform) DO UPDATE SET
+         credentials_encrypted = $3, token_expires_at = $4, status = 'active', handle = $5, last_used_at = NOW(), updated_at = NOW()`,
+      [business_id, platform, JSON.stringify(credentials), expiresAt, handle]
+    );
+
+    // Clean up pending token
+    await pool.query(`DELETE FROM oauth_pending WHERE token = $1`, [token]);
+
+    console.log(`[oauth] ${platform} page selected (${page.name}) for business ${business_id}`);
+    res.json({ success: true, platform, handle });
+  } catch (err) {
+    console.error('[oauth] select-page error:', err);
+    res.status(500).json({ error: 'Failed to save page selection' });
+  }
+});
 
 // ─── Token refresh endpoint (called by cron or manually) ───
 router.post('/refresh/:platform/:businessId', async (req, res) => {

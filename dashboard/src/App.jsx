@@ -121,6 +121,27 @@ const Modal=({onClose,width=400,children})=>{
   </div>;
 };
 
+/* ═══ PAGE PICKER MODAL ═══ */
+function PagePickerModal({token,platform,onDone,onClose}){
+  const[pages,setPages]=useState(null);const[saving,setSaving]=useState(false);const[err,setErr]=useState("");
+  useEffect(()=>{apiFetch(`/api/oauth/pending/${token}`).then(r=>r.ok?r.json():null).then(d=>{if(d)setPages(d.pages);else setErr("Session expired. Please connect again.");});},[token]);
+  const pick=async(pageId)=>{setSaving(true);const r=await apiFetch("/api/oauth/select-page",{method:"POST",body:JSON.stringify({token,page_id:pageId})});if(r.ok){onDone();}else{setSaving(false);setErr("Failed to save. Try again.");}};
+  return <Modal onClose={onClose} width={460}>
+    <div style={{fontSize:16,fontWeight:700,color:T,marginBottom:4}}>Select a page</div>
+    <div style={{fontSize:13,color:U,marginBottom:16}}>Choose which {PM[platform]?.l||platform} page to connect to this business.</div>
+    {err&&<div style={{fontSize:13,color:"#dc2626",marginBottom:12}}>{err}</div>}
+    {!pages&&!err&&<div style={{padding:"24px 0",textAlign:"center"}}><div className="ce-spin" style={{width:22,height:22,border:`2px solid ${B}`,borderTopColor:T,borderRadius:"50%",margin:"0 auto"}}/></div>}
+    {pages&&<div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:8}}>
+      {pages.map(p=><button key={p.id} onClick={()=>!saving&&pick(p.id)} style={{...bt,textAlign:"left",padding:"10px 14px",display:"flex",flexDirection:"column",gap:2,opacity:saving?.5:1}}>
+        <span style={{fontSize:13,fontWeight:600,color:T}}>{p.name}</span>
+        {p.ig_user_id&&<span style={{fontSize:11,color:U}}>Instagram: @{p.ig_user_id}</span>}
+        <span style={{fontSize:11,color:U}}>Page ID: {p.id}</span>
+      </button>)}
+    </div>}
+    {saving&&<div style={{fontSize:12,color:U,textAlign:"center",padding:"8px 0"}}>Saving...</div>}
+  </Modal>;
+}
+
 /* ═══ OAUTH MODAL ═══ */
 function OAuthModal({platform,bizId,onClose}){
   const{mob}=useMedia();
@@ -935,11 +956,12 @@ export default function App(){
   const[sideOpen,setSideOpen]=useState(false);
   const[authLoading,setAuthLoading]=useState(true);
   const[loginErr,setLoginErr]=useState("");
+  const[pagePicker,setPagePicker]=useState(null); // {token,platform}
 
   const loadCreds=async(id,list)=>{const r=await apiFetch(`/api/businesses/${id}/credentials`);if(r.ok){const creds=await r.json();setBizList(prev=>(prev.length?prev:list).map(b=>b.id===id?{...b,connections:credsToBizConnections(creds)}:b));}};
   const loadBusinesses=async(gotoConnections=false)=>{const r=await apiFetch("/api/businesses");if(!r.ok)return;const data=await r.json();const mapped=data.map(db=>dbBizToUi(db,uiStore.get(db.id)));setBizList(mapped);const first=mapped[0]?.id;setBizId(prev=>prev||(first||null));if(gotoConnections)setPage("connections");for(const b of mapped)loadCreds(b.id,mapped);};
 
-  useEffect(()=>{const p=new URLSearchParams(window.location.search);const connected=p.get("connected");const err=p.get("error");if(connected||err){window.history.replaceState({},"",window.location.pathname);if(connected)setPage("connections");}if(getJwt()){setLoggedIn(true);loadBusinesses(!!connected).finally(()=>setAuthLoading(false));}else{setAuthLoading(false);}}, []);
+  useEffect(()=>{const p=new URLSearchParams(window.location.search);const connected=p.get("connected");const err=p.get("error");const pick=p.get("pick");const pickPlatform=p.get("platform");if(connected||err||pick){window.history.replaceState({},"",window.location.pathname);if(connected||pick)setPage("connections");if(pick&&pickPlatform)setPagePicker({token:pick,platform:pickPlatform});}if(getJwt()){setLoggedIn(true);loadBusinesses(!!(connected||pick)).finally(()=>setAuthLoading(false));}else{setAuthLoading(false);}}, []);
 
   const doLogin=async()=>{const em=document.getElementById("ce-email")?.value?.trim();const pw=document.getElementById("ce-pw")?.value;if(!em||!pw){setLoginErr("Enter email and password");return;}setLoginErr("Signing in…");const r=await fetch(`${API_URL}/api/auth/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:em,password:pw})});if(!r.ok){setLoginErr("Invalid email or password");return;}const data=await r.json();setJwt(data.token);setLoggedIn(true);setLoginErr("");setAuthLoading(true);await loadBusinesses();setAuthLoading(false);};
 
@@ -1021,5 +1043,6 @@ export default function App(){
     </Modal>}
 
     {removeModal&&<RemoveModal name={biz.name} onClose={()=>setRemoveModal(false)} onConfirm={removeBiz}/>}
+    {pagePicker&&<PagePickerModal token={pagePicker.token} platform={pagePicker.platform} onClose={()=>setPagePicker(null)} onDone={()=>{setPagePicker(null);loadBusinesses(true);}}/>}
   </div>);
 }
