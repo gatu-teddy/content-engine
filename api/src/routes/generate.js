@@ -3,7 +3,7 @@ import { Router } from 'express';
 const router = Router();
 
 const N8N_WEBHOOK = process.env.N8N_GENERATE_WEBHOOK
-  || 'https://n8n-content-engine-production.up.railway.app/webhook/generate-content';
+  || 'https://n8n-content-engine-production.up.railway.app/webhook-test/generate-content';
 
 // POST /api/generate
 // Proxies to n8n content generation webhook, returns result to dashboard.
