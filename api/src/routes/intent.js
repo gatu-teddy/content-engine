@@ -368,7 +368,8 @@ router.post('/scan/:business_id', async (req, res) => {
   try {
     const { business_id } = req.params;
     const { rows: [biz] } = await pool.query(
-      `SELECT intent_config, reddit_username FROM businesses WHERE id = $1 AND owner_id = $2`,
+      `SELECT intent_config, reddit_client_id, reddit_client_secret, reddit_username
+       FROM businesses WHERE id = $1 AND owner_id = $2`,
       [business_id, req.user.id]
     );
     if (!biz) return res.status(404).json({ error: 'Business not found' });
@@ -381,15 +382,53 @@ router.post('/scan/:business_id', async (req, res) => {
     if (keywords.length === 0) return res.status(400).json({ error: 'No keywords configured' });
 
     const userAgent = `ContentEngine/1.0 (by /u/${biz.reddit_username || 'contentengine'})`;
+
+    // ── Try OAuth client_credentials if we have a Reddit app ──
+    // This bypasses IP-based blocking on cloud servers (Railway, etc.)
+    let authHeader = null;
+    if (biz.reddit_client_id && biz.reddit_client_secret) {
+      try {
+        const tokenRes = await fetch('https://www.reddit.com/api/v1/access_token', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Basic ' + Buffer.from(`${biz.reddit_client_id}:${biz.reddit_client_secret}`).toString('base64'),
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': userAgent,
+          },
+          body: 'grant_type=client_credentials',
+        });
+        const tokenData = await tokenRes.json();
+        if (tokenData.access_token) {
+          authHeader = `Bearer ${tokenData.access_token}`;
+          console.log('[intent] Using Reddit OAuth token for scan');
+        } else {
+          console.error('[intent] Reddit token error:', JSON.stringify(tokenData));
+        }
+      } catch (tokenErr) {
+        console.error('[intent] Reddit OAuth error:', tokenErr.message);
+      }
+    }
+
+    const baseUrl = authHeader ? 'https://oauth.reddit.com' : 'https://www.reddit.com';
     const stored = [];
+    const errors = [];
 
     for (const keyword of keywords.slice(0, 5)) {
       try {
-        const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(keyword)}&sort=new&limit=25&t=week`;
-        const r = await fetch(url, { headers: { 'User-Agent': userAgent } });
-        if (!r.ok) { console.error('[intent] Reddit search failed:', r.status, keyword); continue; }
+        const url = `${baseUrl}/search.json?q=${encodeURIComponent(keyword)}&sort=new&limit=25&t=month`;
+        const headers = { 'User-Agent': userAgent };
+        if (authHeader) headers['Authorization'] = authHeader;
+
+        const r = await fetch(url, { headers });
+        if (!r.ok) {
+          const errText = await r.text();
+          console.error('[intent] Reddit search failed:', r.status, keyword, errText.slice(0, 200));
+          errors.push(`${keyword}: HTTP ${r.status}`);
+          continue;
+        }
         const data = await r.json();
         const posts = data?.data?.children || [];
+        console.log(`[intent] "${keyword}" → ${posts.length} posts`);
 
         for (const { data: p } of posts) {
           if (!p.id) continue;
@@ -397,7 +436,7 @@ router.post('/scan/:business_id', async (req, res) => {
           const sourceText = (p.title + (p.selftext ? '\n\n' + p.selftext : '')).slice(0, 1000);
           const textLower = sourceText.toLowerCase();
           const matched = keywords.filter(kw => textLower.includes(kw.toLowerCase()));
-          if (matched.length === 0) continue; // skip irrelevant posts
+          if (matched.length === 0) continue;
 
           const { rows } = await pool.query(
             `INSERT INTO intent_opportunities
@@ -412,10 +451,19 @@ router.post('/scan/:business_id', async (req, res) => {
         }
       } catch (kwErr) {
         console.error('[intent] Keyword scan error:', keyword, kwErr.message);
+        errors.push(`${keyword}: ${kwErr.message}`);
       }
     }
 
-    res.json({ scanned: keywords.length, stored: stored.length, opportunities: stored });
+    const msg = stored.length > 0
+      ? `Scan complete: ${stored.length} new opportunities found.`
+      : errors.length > 0
+        ? `Scan ran but hit errors: ${errors.join('; ')}. Add Reddit credentials in Settings to fix this.`
+        : authHeader
+          ? `Scan complete: 0 new posts matched your keywords. Try broader terms.`
+          : `0 found. Reddit blocks unauthenticated requests from servers — add your Reddit app credentials in Settings to enable scanning.`;
+
+    res.json({ scanned: keywords.length, stored: stored.length, opportunities: stored, errors, message: msg });
   } catch (err) {
     console.error('[intent] Scan error:', err.message);
     res.status(500).json({ error: 'Scan failed: ' + err.message });

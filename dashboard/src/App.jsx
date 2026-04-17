@@ -833,7 +833,7 @@ function PageIntent({biz,onUpdate}){
   const doScan=async()=>{
     setScanning(true);
     const r=await apiFetch(`/api/intent/scan/${biz.id}`,{method:"POST"});
-    if(r.ok){const d=await r.json();await loadOpps();alert(`Scan complete: ${d.stored} new opportunities found.`);}
+    if(r.ok){const d=await r.json();await loadOpps();alert(d.message||`Scan complete: ${d.stored} new opportunities found.`);}
     else{const d=await r.json().catch(()=>({}));alert("Scan failed: "+(d.error||"Unknown error"));}
     setScanning(false);
   };
