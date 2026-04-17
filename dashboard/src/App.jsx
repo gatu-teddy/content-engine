@@ -224,7 +224,14 @@ function PageCreate({biz,onDone}){
   const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");
   const[selPlats,setSelPlats]=useState(biz.plats);
   const im=(IMGM.find(m=>m.id===(biz.imageModel||"nano_banana_2"))||IMGM[0]).l;
-  const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const data=await r.json();setResult(data);}catch(e){alert("Generation failed: "+e.message);}finally{setGen(false);}};
+  const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const raw=await r.json();console.log("[generate] raw response:", raw);// n8n may return {variants:{...}, image_url:...} or wrap in array
+      const payload=Array.isArray(raw)?raw[0]:raw;
+      const variants=payload?.variants||payload;
+      const image_url=payload?.image_url||null;
+      // attach image_url to each platform variant so display can use it
+      const enriched={};
+      Object.entries(variants).forEach(([k,v])=>{if(typeof v==="object"&&v!==null&&["instagram","facebook","x","tiktok","linkedin","youtube"].includes(k)){enriched[k]={...v,image_url};}});
+      setResult(Object.keys(enriched).length?enriched:variants);}catch(e){alert("Generation failed: "+e.message);}finally{setGen(false);}};
   const smartSched=()=>{const now=new Date();const dow=now.getDay();const optH={instagram:[9,10,11,10,11,10,9],x:[10,8,9,9,8,8,10],facebook:[11,9,10,10,9,9,11],tiktok:[10,14,15,14,15,14,10],linkedin:[10,8,9,8,9,8,10],youtube:[14,13,14,13,12,12,13]};const p=selPlats.find(s=>s!=="off")||"instagram";const h=(optH[p]||[])[dow]||10;const d=new Date(now);if(h<=now.getHours())d.setDate(d.getDate()+1);d.setHours(h,0,0,0);setSchedTime(d.toISOString().slice(0,16))};
   const fillFromTpl=(name)=>{const t=TPLS.find(tp=>tp.name===name);if(t&&t.brief)setBrief(t.brief)};
   const togglePlat=(k)=>setSelPlats(p=>p.includes(k)?p.filter(x=>x!==k):[...p,k]);
@@ -234,7 +241,7 @@ function PageCreate({biz,onDone}){
       <div style={{...r,gap:8}}><button onClick={()=>setResult(null)} style={bt}>Discard</button><button onClick={()=>{setResult(null);setBrief("");onDone?.()}} style={btD}>Approve & schedule</button></div>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
-      {Object.entries(result).map(([k,v])=>{const isVideo=v.video;const platLabel=PM[k]?.l;return <div key={k} style={{...cd,overflow:"hidden"}}>
+      {Object.entries(result).filter(([k,v])=>PM[k]&&typeof v==="object"&&v!==null).map(([k,v])=>{const isVideo=v.video;const platLabel=PM[k]?.l;return <div key={k} style={{...cd,overflow:"hidden"}}>
         <div style={{...r,justifyContent:"space-between",padding:"10px 16px",borderBottom:`1px solid ${BL}`}}>
           <div style={{...r,gap:8}}><span style={{fontSize:12,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{platLabel}</span>{isVideo?<span style={{fontSize:10,fontWeight:600,color:"#16a34a",background:"#f0fdf4",padding:"2px 8px",borderRadius:4}}>{k==="instagram"?"Reel":k==="youtube"?"Short":"Video"}</span>:<span style={{fontSize:10,color:U,background:BL,padding:"2px 8px",borderRadius:4}}>Image</span>}</div>
           <button onClick={()=>{setResult(null);doGen();}} style={{padding:"2px 8px",borderRadius:4,border:`1px solid ${B}`,background:W,fontSize:10,cursor:"pointer",color:U,minHeight:28}}>Regenerate</button>
