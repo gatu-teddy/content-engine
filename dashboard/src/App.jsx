@@ -422,31 +422,54 @@ function PageTemplates({biz}){
   </div>;
 }
 
-function PageHistory(){
+function PageHistory({biz}){
   const{mob}=useMedia();
-  const[items,setItems]=useState(CONTENT);
-  const approve=(id)=>setItems(prev=>prev.map(c=>c.id===id?{...c,status:"scheduled"}:c));
+  const[items,setItems]=useState([]);
+  const[loading,setLoading]=useState(true);
+  useEffect(()=>{
+    setLoading(true);
+    apiFetch(`/api/content?business_id=${biz.id}&limit=50`)
+      .then(r=>r.ok?r.json():{items:[]})
+      .then(d=>{setItems(Array.isArray(d)?d:(d.items||[]));setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[biz.id]);
+  const approve=async(id)=>{
+    await apiFetch(`/api/content/${id}`,{method:"PUT",body:JSON.stringify({status:"scheduled"})});
+    setItems(prev=>prev.map(c=>c.id===id?{...c,status:"scheduled"}:c));
+  };
   return <div>
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 16px",color:T}}>History</h1>
-    {items.map(c=><div key={c.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
+    {loading&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>Loading…</div>}
+    {!loading&&items.length===0&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>No content yet. Generate your first post!</div>}
+    {items.map(c=>{const plats=c.platforms||Object.keys(c.variants||{}).filter(k=>PM[k]);return <div key={c.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
       <div style={{...(mob?{display:"flex",flexDirection:"column",gap:6}:r),justifyContent:"space-between"}}>
-        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.brief}</div><div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{fd(c.at)}</span><Pl p={c.plats}/>{c.tpl&&<span style={{fontSize:11,color:U}}> · {c.tpl}</span>}</div></div>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.brief}</div><div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{fd(c.created_at)}</span><Pl p={plats}/></div></div>
         <div style={{...r,gap:10,flexWrap:"wrap"}}><Sd s={c.status}/>{c.status==="pending_review"&&<button onClick={()=>approve(c.id)} style={{...btD,padding:"4px 10px",fontSize:11}}>Approve</button>}</div>
       </div>
-    </div>)}
+    </div>;})}
   </div>;
 }
 
-function PageCalendar(){
+function PageCalendar({biz}){
   const{mob}=useMedia();
-  const items=CONTENT.filter(c=>c.status==="scheduled"||c.status==="published");
+  const[items,setItems]=useState([]);
+  const[loading,setLoading]=useState(true);
+  useEffect(()=>{
+    setLoading(true);
+    apiFetch(`/api/content?business_id=${biz.id}&limit=50`)
+      .then(r=>r.ok?r.json():{items:[]})
+      .then(d=>{const rows=Array.isArray(d)?d:(d.items||[]);setItems(rows.filter(c=>c.status==="scheduled"||c.status==="published"));setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[biz.id]);
   return <div>
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 4px",color:T}}>Calendar</h1>
     <p style={{fontSize:mob?12:13,color:U,margin:"0 0 16px"}}>{new Date().toLocaleString("default",{month:"long",year:"numeric"})}</p>
-    {items.map(c=><div key={c.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
+    {loading&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>Loading…</div>}
+    {!loading&&items.length===0&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>No scheduled or published content.</div>}
+    {items.map(c=>{const plats=c.platforms||Object.keys(c.variants||{}).filter(k=>PM[k]);return <div key={c.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
       <div style={{...(mob?{display:"flex",flexDirection:"column",gap:4}:r),justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:13,fontWeight:500,color:T}}>{c.brief}</span><Sd s={c.status}/></div>
-      <div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{c.sched?"Sched: "+fd(c.sched):fd(c.at)}</span><Pl p={c.plats}/></div>
-    </div>)}
+      <div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{c.scheduled_at?"Sched: "+fd(c.scheduled_at):fd(c.created_at)}</span><Pl p={plats}/></div>
+    </div>;})}
   </div>;
 }
 
@@ -1025,7 +1048,7 @@ export default function App(){
   const nav=[{id:"home",label:"Overview",icon:"home"},{id:"create",label:"Create",icon:"spark"},{id:"templates",label:"Templates",icon:"tpl"},{id:"calendar",label:"Calendar",icon:"cal"},{id:"history",label:"History",icon:"clock",badge:pc},{id:"intent",label:"Intent sniping",icon:"target",badge:ib>0?ib:0},{id:"trending",label:"Trending",icon:"trending"},{id:"connections",label:"Connections",icon:"link",dot:wc>0},{id:"vault",label:"Context vault",icon:"folder"},{id:"settings",label:"Settings",icon:"gear"}];
   const addBiz=async(name,voice)=>{const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+"-"+Date.now();const res=await apiFetch("/api/businesses",{method:"POST",body:JSON.stringify({display_name:name,slug,brand_voice:voice||"",enabled_platforms:["instagram","facebook"]})});if(!res.ok){alert("Failed to create business");return;}const db=await res.json();const nb=dbBizToUi(db);setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections");};
   const removeBiz=async()=>{if(bizList.length<=1)return;await apiFetch(`/api/businesses/${bizId}`,{method:"DELETE"});const nx=bizList.find(b=>b.id!==bizId)?.id;setBizList(p=>p.filter(b=>b.id!==bizId));setBizId(nx);setRemoveModal(false);setPage("home")};
-  const rp=()=>{switch(page){case"home":return <PageHome biz={biz}/>;case"create":return <PageCreate biz={biz}/>;case"templates":return <PageTemplates biz={biz}/>;case"calendar":return <PageCalendar/>;case"history":return <PageHistory/>;case"intent":return <PageIntent biz={biz} onUpdate={upd}/>;case"trending":return <PageTrending biz={biz} onUpdate={upd}/>;case"connections":return <PageConnections biz={biz} onUpdate={upd}/>;case"vault":return <PageVault biz={biz}/>;case"settings":return <PageSettings biz={biz} onUpdate={upd}/>;default:return <PageHome biz={biz}/>}};
+  const rp=()=>{switch(page){case"home":return <PageHome biz={biz}/>;case"create":return <PageCreate biz={biz}/>;case"templates":return <PageTemplates biz={biz}/>;case"calendar":return <PageCalendar biz={biz}/>;case"history":return <PageHistory biz={biz}/>;case"intent":return <PageIntent biz={biz} onUpdate={upd}/>;case"trending":return <PageTrending biz={biz} onUpdate={upd}/>;case"connections":return <PageConnections biz={biz} onUpdate={upd}/>;case"vault":return <PageVault biz={biz}/>;case"settings":return <PageSettings biz={biz} onUpdate={upd}/>;default:return <PageHome biz={biz}/>}};
   const goPage=(id)=>{setPage(id);setSideOpen(false)};
 
   const showSidebar=!mob||sideOpen;
