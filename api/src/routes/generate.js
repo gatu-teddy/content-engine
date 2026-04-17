@@ -29,13 +29,26 @@ router.post('/', async (req, res) => {
       }),
     });
 
+    const text = await response.text();
+
     if (!response.ok) {
-      const text = await response.text();
       console.error('[generate] n8n error:', response.status, text);
       return res.status(502).json({ error: 'Generation service error', detail: text });
     }
 
-    const data = await response.json();
+    if (!text || !text.trim()) {
+      console.error('[generate] n8n returned empty response');
+      return res.status(502).json({ error: 'Generation service returned empty response' });
+    }
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      console.error('[generate] n8n response not JSON:', text.slice(0, 200));
+      return res.status(502).json({ error: 'Generation service returned invalid response', detail: text.slice(0, 200) });
+    }
+
     res.json(data);
 
   } catch (err) {
