@@ -450,17 +450,47 @@ function PageCalendar(){
   </div>;
 }
 
+const CODE_EXTS=["js","jsx","ts","tsx","json","csv","py","html","css"];
 function PageVault({biz}){
   const{mob}=useMedia();
   const[tab,setTab]=useState("docs");
+  const[loading,setLoading]=useState(true);
+  const[docList,setDocList]=useState([]);
+  const[imgList,setImgList]=useState([]);
   const ts=a=>({padding:"6px 14px",borderRadius:6,border:"none",fontSize:12,fontWeight:500,cursor:"pointer",background:a?W:"transparent",color:a?T:U,minHeight:32});
   const typeColor=(t)=>t==="JSX"||t==="JS"||t==="TSX"||t==="JSON"?"#7c3aed":t==="PDF"?"#dc2626":t==="MD"?"#2563eb":"#0891b2";
-  const[docList,setDocList]=useState([{n:"Business_Plan_2026.pdf",t:"PDF",s:"2.3 MB",desc:"Core business strategy and financials"},{n:"Brand_Guidelines_v3.docx",t:"DOCX",s:"1.8 MB",desc:"Colours, typography, tone of voice"}]);
-  const[codeList,setCodeList]=useState([{n:"LandingPage.jsx",t:"JSX",s:"48 KB",desc:"Main landing page"},{n:"PricingTable.jsx",t:"JSX",s:"12 KB",desc:"Pricing component"},{n:"services.json",t:"JSON",s:"3 KB",desc:"Service catalogue — treatments, prices, durations"}]);
-  const[imgList,setImgList]=useState(["Logo","Product","Mood board","Palette","Interior"]);
-  const remDoc=(i)=>setDocList(p=>p.filter((_,j)=>j!==i));
-  const remCode=(i)=>setCodeList(p=>p.filter((_,j)=>j!==i));
-  const remImg=(i)=>setImgList(p=>p.filter((_,j)=>j!==i));
+  const fmtSize=(b)=>b>1048576?(b/1048576).toFixed(1)+" MB":(b/1024).toFixed(0)+" KB";
+
+  const loadVault=async()=>{
+    setLoading(true);
+    const[dr,ir]=await Promise.all([
+      apiFetch(`/api/uploads/documents/${biz.id}`).then(r=>r.ok?r.json():[]).catch(()=>[]),
+      apiFetch(`/api/uploads/images/${biz.id}`).then(r=>r.ok?r.json():[]).catch(()=>[]),
+    ]);
+    setDocList(dr);setImgList(ir);setLoading(false);
+  };
+  useEffect(()=>{loadVault();},[biz.id]);
+
+  const uploadDoc=async(file)=>{
+    const fd=new FormData();fd.append("file",file);
+    const r=await apiFetch(`/api/uploads/document/${biz.id}`,{method:"POST",body:fd,headers:{}});
+    if(r.ok){const d=await r.json();setDocList(p=>[d,...p]);}
+  };
+  const uploadImg=async(file)=>{
+    const fd=new FormData();fd.append("file",file);fd.append("label",file.name.split(".")[0]);
+    const r=await apiFetch(`/api/uploads/image/${biz.id}`,{method:"POST",body:fd,headers:{}});
+    if(r.ok){const d=await r.json();setImgList(p=>[d,...p]);}
+  };
+  const remDoc=async(doc)=>{
+    await apiFetch(`/api/uploads/document/${biz.id}/${doc.id}`,{method:"DELETE"});
+    setDocList(p=>p.filter(d=>d.id!==doc.id));
+  };
+  const remImg=async(img)=>{
+    await apiFetch(`/api/uploads/image/${biz.id}/${img.id}`,{method:"DELETE"});
+    setImgList(p=>p.filter(d=>d.id!==img.id));
+  };
+  const allDocs=docList.filter(d=>!CODE_EXTS.includes(d.file_type));
+  const codeList=docList.filter(d=>CODE_EXTS.includes(d.file_type));
 
   return <div>
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 2px",color:T}}>Context vault</h1>
@@ -468,43 +498,38 @@ function PageVault({biz}){
     <div style={{...r,gap:2,marginBottom:14,background:BL,borderRadius:8,padding:3,width:"fit-content",flexWrap:"wrap"}}>
       {[["docs","Documents"],["code","Code & data"],["imgs","Images"]].map(([k,l])=><button key={k} onClick={()=>setTab(k)} style={ts(tab===k)}>{l}</button>)}
     </div>
-    {tab==="docs"&&<div>
-      {docList.map((d,i)=><div key={i} style={{...cd,...(mob?{padding:"10px 12px"}:{...r,padding:"12px 14px"}),marginBottom:8}}>
-        {mob?<div>
-          <div style={{...r,gap:8,marginBottom:6}}><span style={{fontSize:10,fontWeight:700,color:typeColor(d.t),background:BL,padding:"4px 8px",borderRadius:4}}>{d.t}</span><span style={{fontSize:13,fontWeight:500,color:T}}>{d.n}</span></div>
-          <div style={{fontSize:11,color:U,marginBottom:8}}>{d.s} · {d.desc}</div>
-          <button onClick={()=>remDoc(i)} style={btR}>Remove</button>
-        </div>:<>
-          <div style={{width:34,height:34,borderRadius:6,background:BL,...r,justifyContent:"center",marginRight:12,flexShrink:0}}><span style={{fontSize:10,fontWeight:700,color:typeColor(d.t)}}>{d.t}</span></div>
-          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T}}>{d.n}</div><div style={{fontSize:11,color:U}}>{d.s} · {d.desc}</div></div>
-          <button onClick={()=>remDoc(i)} style={btR}>Remove</button>
-        </>}
-      </div>)}
-      <input type="file" id="docUp" accept=".pdf,.docx,.txt,.md" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)setDocList(p=>[...p,{n:f.name,t:f.name.split('.').pop().toUpperCase(),s:(f.size/1024).toFixed(0)+" KB",desc:"Uploaded"}])}}/>
+    {loading&&<div style={{fontSize:13,color:U,padding:"20px 0"}}>Loading vault...</div>}
+    {!loading&&tab==="docs"&&<div>
+      {allDocs.length===0&&<div style={{fontSize:12,color:U,padding:"12px 0"}}>No documents yet.</div>}
+      {allDocs.map((d)=>{const t=d.file_type?.toUpperCase();return <div key={d.id} style={{...cd,...(mob?{padding:"10px 12px"}:{...r,padding:"12px 14px"}),marginBottom:8}}>
+        <div style={{width:34,height:34,borderRadius:6,background:BL,...r,justifyContent:"center",marginRight:12,flexShrink:0}}><span style={{fontSize:10,fontWeight:700,color:typeColor(t)}}>{t}</span></div>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T}}>{d.filename}</div><div style={{fontSize:11,color:U}}>{fmtSize(d.file_size_bytes)}</div></div>
+        <button onClick={()=>remDoc(d)} style={btR}>Remove</button>
+      </div>;})}
+      <input type="file" id="docUp" accept=".pdf,.docx,.txt,.md" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)uploadDoc(f);e.target.value="";}}/>
       <button onClick={()=>document.getElementById("docUp").click()} style={{...bt,borderStyle:"dashed",marginTop:4}}>Upload document</button>
       <div style={{marginTop:10,fontSize:11,color:U,lineHeight:1.5}}>Supported: PDF, DOCX, TXT, MD.</div>
     </div>}
-    {tab==="code"&&<div>
-      <div style={{...cd,padding:"12px 14px",marginBottom:12}}><div style={{fontSize:12,color:M,lineHeight:1.6}}>Upload your product's source code, config files, or data files. Claude reads these to generate accurate content.</div></div>
-      {codeList.map((d,i)=><div key={i} style={{...cd,...(mob?{padding:"10px 12px"}:{...r,padding:"12px 14px"}),marginBottom:8}}>
-        {mob?<div>
-          <div style={{...r,gap:8,marginBottom:6}}><span style={{fontSize:9,fontWeight:700,color:typeColor(d.t),background:BL,padding:"4px 8px",borderRadius:4,fontFamily:"monospace"}}>{d.t}</span><span style={{fontSize:13,fontWeight:500,color:T,fontFamily:"monospace"}}>{d.n}</span></div>
-          <div style={{fontSize:11,color:U,marginBottom:8}}>{d.s} · {d.desc}</div>
-          <button onClick={()=>remCode(i)} style={btR}>Remove</button>
-        </div>:<>
-          <div style={{width:34,height:34,borderRadius:6,background:BL,...r,justifyContent:"center",marginRight:12,flexShrink:0}}><span style={{fontSize:9,fontWeight:700,color:typeColor(d.t),fontFamily:"monospace"}}>{d.t}</span></div>
-          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,fontFamily:"monospace"}}>{d.n}</div><div style={{fontSize:11,color:U}}>{d.s} · {d.desc}</div></div>
-          <button onClick={()=>remCode(i)} style={btR}>Remove</button>
-        </>}
-      </div>)}
-      <input type="file" id="codeUp" accept=".js,.jsx,.ts,.tsx,.json,.csv,.py,.html,.css" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)setCodeList(p=>[...p,{n:f.name,t:f.name.split('.').pop().toUpperCase(),s:(f.size/1024).toFixed(0)+" KB",desc:"Uploaded"}])}}/>
+    {!loading&&tab==="code"&&<div>
+      <div style={{...cd,padding:"12px 14px",marginBottom:12}}><div style={{fontSize:12,color:M,lineHeight:1.6}}>Upload source code, config files, or data files. Claude reads these to generate accurate content.</div></div>
+      {codeList.length===0&&<div style={{fontSize:12,color:U,padding:"12px 0"}}>No code files yet.</div>}
+      {codeList.map((d)=>{const t=d.file_type?.toUpperCase();return <div key={d.id} style={{...cd,...(mob?{padding:"10px 12px"}:{...r,padding:"12px 14px"}),marginBottom:8}}>
+        <div style={{width:34,height:34,borderRadius:6,background:BL,...r,justifyContent:"center",marginRight:12,flexShrink:0}}><span style={{fontSize:9,fontWeight:700,color:typeColor(t),fontFamily:"monospace"}}>{t}</span></div>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,fontFamily:"monospace"}}>{d.filename}</div><div style={{fontSize:11,color:U}}>{fmtSize(d.file_size_bytes)}</div></div>
+        <button onClick={()=>remDoc(d)} style={btR}>Remove</button>
+      </div>;})}
+      <input type="file" id="codeUp" accept=".js,.jsx,.ts,.tsx,.json,.csv,.py,.html,.css" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)uploadDoc(f);e.target.value="";}}/>
       <button onClick={()=>document.getElementById("codeUp").click()} style={{...bt,borderStyle:"dashed",marginTop:4}}>Upload code / data file</button>
     </div>}
-    {tab==="imgs"&&<div>
+    {!loading&&tab==="imgs"&&<div>
       <RGrid cols={5} tabCols={3} mobCols={2} gap={8}>
-        {imgList.map((l,i)=><div key={i} style={{...cd,overflow:"hidden"}}><div style={{aspectRatio:"1",background:BL}}/><div style={{padding:"6px 8px",fontSize:11,color:M}}>{l}</div></div>)}
+        {imgList.map((img)=><div key={img.id} style={{...cd,overflow:"hidden",position:"relative"}}>
+          <div style={{aspectRatio:"1",background:BL,overflow:"hidden"}}>{img.file_url&&<img src={img.file_url} alt={img.label} style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>
+          <div style={{padding:"6px 8px",...r,justifyContent:"space-between"}}><span style={{fontSize:11,color:M,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{img.label||img.filename}</span><button onClick={()=>remImg(img)} style={{...btR,padding:"1px 6px",fontSize:10}}>×</button></div>
+        </div>)}
       </RGrid>
-      <input type="file" id="imgUp" accept="image/*" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)setImgList(p=>[...p,f.name.split('.')[0]])}}/>
+      {imgList.length===0&&<div style={{fontSize:12,color:U,padding:"12px 0"}}>No images yet.</div>}
+      <input type="file" id="imgUp" accept="image/*" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)uploadImg(f);e.target.value="";}}/>
       <button onClick={()=>document.getElementById("imgUp").click()} style={{...bt,borderStyle:"dashed",marginTop:10}}>Upload image</button>
       <div style={{marginTop:10,fontSize:11,color:U,lineHeight:1.5}}>Reference images for the AI image generator.</div>
     </div>}

@@ -90,4 +90,62 @@ router.post('/image/:businessId', upload.single('file'), async (req, res) => {
   }
 });
 
+// GET /api/uploads/documents/:businessId — List context documents
+router.get('/documents/:businessId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, filename, file_url, file_type, file_size_bytes, created_at
+       FROM context_documents WHERE business_id = $1 ORDER BY created_at DESC`,
+      [req.params.businessId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('List documents error:', err);
+    res.status(500).json({ error: 'Failed to list documents' });
+  }
+});
+
+// DELETE /api/uploads/document/:businessId/:docId — Remove a document
+router.delete('/document/:businessId/:docId', async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM context_documents WHERE id = $1 AND business_id = $2`,
+      [req.params.docId, req.params.businessId]
+    );
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Delete document error:', err);
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
+// GET /api/uploads/images/:businessId — List reference images
+router.get('/images/:businessId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, filename, file_url, label, file_size_bytes, created_at
+       FROM reference_images WHERE business_id = $1 ORDER BY created_at DESC`,
+      [req.params.businessId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('List images error:', err);
+    res.status(500).json({ error: 'Failed to list images' });
+  }
+});
+
+// DELETE /api/uploads/image/:businessId/:imageId — Remove a reference image
+router.delete('/image/:businessId/:imageId', async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM reference_images WHERE id = $1 AND business_id = $2`,
+      [req.params.imageId, req.params.businessId]
+    );
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Delete image error:', err);
+    res.status(500).json({ error: 'Failed to delete image' });
+  }
+});
+
 export default router;
