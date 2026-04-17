@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { pool } from '../db.js';
 
 const router = Router();
 
@@ -6,7 +7,7 @@ const N8N_WEBHOOK = process.env.N8N_GENERATE_WEBHOOK
   || 'https://n8n-content-engine-production.up.railway.app/webhook/generate-content';
 
 // POST /api/generate
-// Proxies to n8n content generation webhook, returns result to dashboard.
+// Creates a content record, proxies to n8n with the record ID, returns result.
 router.post('/', async (req, res) => {
   const { business_id, brief, image_model, generate_image, platforms, scheduled_at } = req.body;
 
@@ -14,11 +15,26 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'business_id and brief are required' });
   }
 
+  // Create the content record first so n8n has a real ID to UPDATE
+  let contentId;
+  try {
+    const row = await pool.query(
+      `INSERT INTO content (business_id, brief, status, scheduled_at)
+       VALUES ($1, $2, 'generating', $3) RETURNING id`,
+      [business_id, brief, scheduled_at || null]
+    );
+    contentId = row.rows[0].id;
+  } catch (err) {
+    console.error('[generate] failed to create content record:', err.message);
+    return res.status(500).json({ error: 'Failed to create content record' });
+  }
+
   try {
     const response = await fetch(N8N_WEBHOOK, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        content_id: contentId,
         business_id,
         brief,
         image_model: image_model || 'nano_banana_2',
@@ -53,6 +69,8 @@ router.post('/', async (req, res) => {
 
   } catch (err) {
     console.error('[generate] fetch error:', err.message);
+    // Mark the record as failed
+    await pool.query(`UPDATE content SET status = 'failed' WHERE id = $1`, [contentId]).catch(() => {});
     res.status(500).json({ error: 'Failed to reach generation service' });
   }
 });
