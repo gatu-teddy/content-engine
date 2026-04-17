@@ -19,9 +19,8 @@ router.post('/', async (req, res) => {
   let contentId;
   try {
     const row = await pool.query(
-      `INSERT INTO content (business_id, brief, status, scheduled_at)
-       VALUES ($1, $2, 'generating', $3) RETURNING id`,
-      [business_id, brief, scheduled_at || null]
+      `INSERT INTO content (business_id, brief, status) VALUES ($1, $2, 'generating') RETURNING id`,
+      [business_id, brief]
     );
     contentId = row.rows[0].id;
   } catch (err) {
