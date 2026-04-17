@@ -15,6 +15,7 @@ async function apiFetch(path, opts = {}) {
   return res;
 }
 function dbBizToUi(db, saved = {}) {
+  const ic = db.intent_config || {};
   return {
     id: db.id,
     name: db.display_name,
@@ -25,7 +26,7 @@ function dbBizToUi(db, saved = {}) {
     pend: parseInt(db.pending_count) || 0,
     auto: 'manual', imageModel: 'nano_banana_2', videoRatio: {}, voiceId: 'sarah',
     musicStyle: 'Luxury ambient — soft piano, aspirational', videoDur: 10, videoLangs: ['en'],
-    intent: { mode: 'off', platforms: { reddit: false, x: false }, keywords: [], dailyCap: { reddit: 0, x: 0 }, geo: { country: '', global: true }, discovered: { reddit: [], x: [] }, opportunities: 0, replied: 0 },
+    intent: { mode: ic.mode||'off', platforms: ic.platforms||{reddit:false,x:false}, keywords: ic.keywords||[], dailyCap: ic.dailyCap||{reddit:0,x:0}, geo: ic.geo||{country:'',global:true}, discovered: ic.discovered||{reddit:[],x:[]}, platformAuto: ic.platformAuto||{}, opportunities: 0, replied: 0 },
     cadence: Object.fromEntries(Object.keys(PM).map(k => [k, 'off'])),
     connections: Object.fromEntries(Object.keys(PM).map(k => [k, { status: 'not_connected', handle: '', note: '' }])),
     ...saved,
@@ -774,25 +775,94 @@ const INTENT_OPPS=[
 
 function PageIntent({biz,onUpdate}){
   const{mob}=useMedia();
-  const it=biz.intent||{mode:"off",platforms:{},keywords:[],dailyCap:{},geo:{country:"",global:true},discovered:{reddit:[],x:[]},opportunities:0,replied:0};
+  const it=biz.intent||{mode:"off",platforms:{},keywords:[],dailyCap:{},geo:{country:"",global:true},discovered:{reddit:[],x:[]},platformAuto:{},opportunities:0,replied:0};
   const[tab,setTab]=useState("feed");
   const[newKw,setNewKw]=useState("");
-  const[opps,setOpps]=useState(INTENT_OPPS);
+  const[opps,setOpps]=useState([]);
+  const[loadingOpps,setLoadingOpps]=useState(false);
+  const[scanning,setScanning]=useState(false);
+  const[savingSettings,setSavingSettings]=useState(false);
+  const[settingsSaved,setSettingsSaved]=useState(false);
+  const[generatingId,setGeneratingId]=useState(null);
+  const[postingId,setPostingId]=useState(null);
+  const[redditCreds,setRedditCreds]=useState({client_id:"",client_secret:"",username:"",password:""});
+  const[savingCreds,setSavingCreds]=useState(false);
+  const[credsSaved,setCredsSaved]=useState(false);
+
   const anyOn=it.platforms.reddit||it.platforms.x;
   const pending=opps.filter(o=>o.status==="pending").length;
   const queued=opps.filter(o=>o.status==="queued").length;
 
+  // Load opportunities from API
+  const loadOpps=async()=>{
+    setLoadingOpps(true);
+    try{
+      const r=await apiFetch(`/api/intent/opportunities/${biz.id}`);
+      if(r.ok){const d=await r.json();setOpps(d.opportunities||[]);}
+    }catch(_){}
+    setLoadingOpps(false);
+  };
+  useEffect(()=>{loadOpps();},[biz.id]);
+
+  // Settings helpers (update local state + flag unsaved)
   const setMode=m=>onUpdate({...biz,intent:{...it,mode:m}});
   const togglePlat=p=>onUpdate({...biz,intent:{...it,platforms:{...it.platforms,[p]:!it.platforms[p]}}});
   const toggleAuto=p=>onUpdate({...biz,intent:{...it,platformAuto:{...(it.platformAuto||{}),[p]:!(it.platformAuto||{})[p]}}});
   const addKw=()=>{if(newKw.trim()&&!it.keywords.includes(newKw.trim())){onUpdate({...biz,intent:{...it,keywords:[...it.keywords,newKw.trim()]}});setNewKw("")}};
   const removeKw=k=>onUpdate({...biz,intent:{...it,keywords:it.keywords.filter(x=>x!==k)}});
   const setCap=(p,v)=>onUpdate({...biz,intent:{...it,dailyCap:{...it.dailyCap,[p]:parseInt(v)||0}}});
-  const approveOpp=id=>setOpps(p=>p.map(o=>o.id===id?{...o,status:"replied"}:o));
-  const dismissOpp=id=>setOpps(p=>p.map(o=>o.id===id?{...o,status:"dismissed"}:o));
 
-  const getUserCap=(plat)=>it.dailyCap[plat]||{reddit:5,x:10}[plat]||5;
-  const repliedToday={reddit:opps.filter(o=>o.source==="reddit"&&o.status==="replied").length,x:opps.filter(o=>o.source==="x"&&o.status==="replied").length};
+  // Save settings to DB
+  const saveSettings=async()=>{
+    setSavingSettings(true);
+    const r=await apiFetch(`/api/intent/settings/${biz.id}`,{method:"PUT",body:JSON.stringify({keywords:it.keywords,platforms:it.platforms,dailyCap:it.dailyCap,geo:it.geo,mode:it.mode,platformAuto:it.platformAuto||{}})});
+    setSavingSettings(false);
+    if(r.ok){setSettingsSaved(true);setTimeout(()=>setSettingsSaved(false),2500);}
+  };
+
+  // Save Reddit credentials
+  const saveRedditCreds=async()=>{
+    if(!redditCreds.client_id||!redditCreds.client_secret||!redditCreds.username||!redditCreds.password)return alert("Fill in all four Reddit fields");
+    setSavingCreds(true);
+    const r=await apiFetch(`/api/intent/credentials/${biz.id}`,{method:"PUT",body:JSON.stringify({reddit_client_id:redditCreds.client_id,reddit_client_secret:redditCreds.client_secret,reddit_username:redditCreds.username,reddit_password:redditCreds.password})});
+    setSavingCreds(false);
+    if(r.ok){setCredsSaved(true);setTimeout(()=>setCredsSaved(false),2500);}else{alert("Failed to save credentials");}
+  };
+
+  // Scan Reddit for new opportunities
+  const doScan=async()=>{
+    setScanning(true);
+    const r=await apiFetch(`/api/intent/scan/${biz.id}`,{method:"POST"});
+    if(r.ok){const d=await r.json();await loadOpps();alert(`Scan complete: ${d.stored} new opportunities found.`);}
+    else{const d=await r.json().catch(()=>({}));alert("Scan failed: "+(d.error||"Unknown error"));}
+    setScanning(false);
+  };
+
+  // Generate reply for an opportunity
+  const genReply=async(id)=>{
+    setGeneratingId(id);
+    const r=await apiFetch(`/api/intent/generate-reply/${id}`,{method:"POST"});
+    if(r.ok){const d=await r.json();setOpps(p=>p.map(o=>o.id===id?d.opportunity:o));}
+    else{alert("Failed to generate reply");}
+    setGeneratingId(null);
+  };
+
+  // Post reply to Reddit/X
+  const postReply=async(id)=>{
+    setPostingId(id);
+    const r=await apiFetch(`/api/intent/post-reply/${id}`,{method:"POST"});
+    if(r.ok){setOpps(p=>p.map(o=>o.id===id?{...o,status:"posted"}:o));}
+    else{const d=await r.json().catch(()=>({}));alert("Failed to post: "+(d.error||"Unknown error"));}
+    setPostingId(null);
+  };
+
+  // Dismiss opportunity
+  const dismissOpp=async(id)=>{
+    await apiFetch(`/api/intent/opportunities/${id}`,{method:"PATCH",body:JSON.stringify({status:"dismissed"})});
+    setOpps(p=>p.map(o=>o.id===id?{...o,status:"dismissed"}:o));
+  };
+
+
 
   const tabStyle=a=>({padding:"6px 14px",borderRadius:6,border:"none",fontSize:12,fontWeight:500,cursor:"pointer",background:a?W:"transparent",color:a?T:U,minHeight:32});
 
@@ -809,36 +879,45 @@ function PageIntent({biz,onUpdate}){
     {tab==="feed"?<div>
       {!anyOn&&<div style={{...cd,padding:"32px 20px",textAlign:"center"}}><div style={{fontSize:14,fontWeight:600,color:T,marginBottom:4}}>Intent sniping is off</div><div style={{fontSize:12,color:U,marginBottom:14}}>Switch to Settings to enable Reddit or X monitoring.</div><button onClick={()=>{togglePlat("reddit");setTab("settings")}} style={btD}>Enable</button></div>}
       {anyOn&&<>
-        <RGrid cols={4} tabCols={2} mobCols={2} gap={8} style={{marginBottom:10}}>
-          {[{l:"Opportunities",v:opps.filter(o=>o.status!=="dismissed").length},{l:"Pending",v:pending},{l:"Replied",v:opps.filter(o=>o.status==="replied").length},{l:"Dismissed",v:opps.filter(o=>o.status==="dismissed").length}].map(s=><div key={s.l} style={{...cd,padding:mob?"10px 12px":"12px 14px"}}><div style={{fontSize:mob?18:20,fontWeight:700,color:T}}>{s.v}</div><div style={{fontSize:mob?10:11,color:U,marginTop:1}}>{s.l}</div></div>)}
-        </RGrid>
-        <div style={{...r,gap:12,marginBottom:14,flexWrap:"wrap"}}>
-          {["reddit","x"].map(plat=>{const cap=getUserCap(plat);const used=repliedToday[plat]||0;const atLimit=used>=cap;return it.platforms[plat]&&<div key={plat} style={{fontSize:10,color:atLimit?"#dc2626":U,background:atLimit?"#fef2f2":BL,padding:"4px 10px",borderRadius:4}}>
-            {plat==="reddit"?"Reddit":"X"}: {used}/{cap} replies today{atLimit?" — limit reached":""}
-          </div>})}
+        <div style={{...r,gap:8,marginBottom:14,flexWrap:"wrap"}}>
+          <button onClick={doScan} disabled={scanning} style={{...btD,padding:"6px 16px",fontSize:12,opacity:scanning?.6:1}}>{scanning?"Scanning…":"🔍 Scan now"}</button>
+          <button onClick={loadOpps} style={{...bt,padding:"6px 12px",fontSize:12}}>Refresh</button>
+          {loadingOpps&&<span style={{fontSize:11,color:U}}>Loading…</span>}
         </div>
+        <RGrid cols={4} tabCols={2} mobCols={2} gap={8} style={{marginBottom:10}}>
+          {[{l:"Opportunities",v:opps.filter(o=>o.status!=="dismissed").length},{l:"Pending",v:pending},{l:"Queued",v:queued},{l:"Posted",v:opps.filter(o=>o.status==="posted").length}].map(s=><div key={s.l} style={{...cd,padding:mob?"10px 12px":"12px 14px"}}><div style={{fontSize:mob?18:20,fontWeight:700,color:T}}>{s.v}</div><div style={{fontSize:mob?10:11,color:U,marginTop:1}}>{s.l}</div></div>)}
+        </RGrid>
+        {opps.length===0&&!loadingOpps&&<div style={{...cd,padding:"24px 20px",textAlign:"center",color:U,fontSize:13}}>No opportunities yet. Click "Scan now" to search Reddit for relevant posts.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          {opps.filter(o=>o.status!=="dismissed").map(o=><div key={o.id} style={{...cd,padding:mob?"12px 14px":"14px 16px"}}>
+          {opps.filter(o=>o.status!=="dismissed").map(o=>{
+            const score=parseFloat(o.relevance_score)||0;
+            const isHigh=score>=0.7;
+            const isGenerating=generatingId===o.id;
+            const isPosting=postingId===o.id;
+            return <div key={o.id} style={{...cd,padding:mob?"12px 14px":"14px 16px"}}>
             <div style={{...(mob?{display:"flex",flexDirection:"column",gap:4}:r),justifyContent:"space-between",marginBottom:6}}>
               <div style={{...r,gap:8,flexWrap:"wrap"}}>
-                <span style={{fontSize:11,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{o.source==="reddit"?"Reddit":"X"}</span>
-                {o.sub&&<span style={{fontSize:11,color:U}}>{o.sub}</span>}
-                <span style={{...r,gap:4}}><span style={{width:6,height:6,borderRadius:3,background:o.score==="high"?"#16a34a":"#d97706"}}/><span style={{fontSize:11,color:M}}>{o.score} intent</span></span>
+                <span style={{fontSize:11,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{o.platform==="reddit"?"Reddit":"X"}</span>
+                {o.source_subreddit&&<span style={{fontSize:11,color:U}}>{o.source_subreddit}</span>}
+                <span style={{...r,gap:4}}><span style={{width:6,height:6,borderRadius:3,background:isHigh?"#16a34a":"#d97706"}}/><span style={{fontSize:11,color:M}}>{isHigh?"high":"medium"} intent</span></span>
               </div>
-              <div style={{...r,gap:4}}>
-                <span style={{fontSize:10,color:o.status==="replied"?"#16a34a":o.status==="pending"?"#d97706":U}}>{o.status}</span>
-                <span style={{fontSize:10,color:U}}>{fd(o.at)}</span>
+              <div style={{...r,gap:6}}>
+                <span style={{fontSize:10,color:o.status==="posted"?"#16a34a":o.status==="pending"?"#d97706":U}}>{o.status}</span>
+                <a href={o.source_url} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:U}}>↗ view</a>
+                <span style={{fontSize:10,color:U}}>{fd(o.created_at)}</span>
               </div>
             </div>
-            {o.title&&<div style={{fontSize:13,fontWeight:600,color:T,marginBottom:4}}>{o.title}</div>}
-            <div style={{fontSize:12,color:M,lineHeight:1.5,marginBottom:o.reply?10:0}}>{o.snippet}</div>
-            {o.reply&&<div style={{background:BL,borderRadius:8,padding:"10px 14px",marginBottom:8}}>
+            <div style={{fontSize:12,color:M,lineHeight:1.5,marginBottom:o.generated_reply?10:8}}>{o.source_text?.slice(0,300)}{o.source_text?.length>300?"…":""}</div>
+            {o.generated_reply&&<div style={{background:BL,borderRadius:8,padding:"10px 14px",marginBottom:8}}>
               <div style={{fontSize:11,fontWeight:600,color:M,marginBottom:4}}>Generated reply:</div>
-              <div style={{fontSize:12,color:M,lineHeight:1.5}}>{o.reply}</div>
+              <div style={{fontSize:12,color:M,lineHeight:1.5}}>{o.generated_reply}</div>
             </div>}
-            {o.status==="pending"&&<div style={{...r,gap:6,flexWrap:"wrap"}}><button onClick={()=>approveOpp(o.id)} style={{...btD,padding:"5px 14px",fontSize:11}}>Approve & post</button><button onClick={()=>dismissOpp(o.id)} style={{...bt,padding:"5px 14px",fontSize:11,color:U}}>Dismiss</button></div>}
-            {o.status==="queued"&&<div style={{...r,gap:6,flexWrap:"wrap"}}><button onClick={()=>approveOpp(o.id)} style={{...btD,padding:"5px 14px",fontSize:11}}>Generate reply</button><button onClick={()=>dismissOpp(o.id)} style={{...bt,padding:"5px 14px",fontSize:11,color:U}}>Dismiss</button></div>}
-          </div>)}
+            <div style={{...r,gap:6,flexWrap:"wrap"}}>
+              {o.status==="pending"&&<><button onClick={()=>postReply(o.id)} disabled={isPosting} style={{...btD,padding:"5px 14px",fontSize:11,opacity:isPosting?.6:1}}>{isPosting?"Posting…":"Approve & post"}</button><button onClick={()=>dismissOpp(o.id)} style={{...bt,padding:"5px 14px",fontSize:11,color:U}}>Dismiss</button></>}
+              {o.status==="queued"&&<><button onClick={()=>genReply(o.id)} disabled={isGenerating} style={{...btD,padding:"5px 14px",fontSize:11,opacity:isGenerating?.6:1}}>{isGenerating?"Generating…":"Generate reply"}</button><button onClick={()=>dismissOpp(o.id)} style={{...bt,padding:"5px 14px",fontSize:11,color:U}}>Dismiss</button></>}
+              {o.status==="posted"&&<span style={{fontSize:11,color:"#16a34a",fontWeight:500}}>✓ Posted to {o.platform}</span>}
+            </div>
+          </div>;})}
         </div>
       </>}
     </div>
@@ -895,17 +974,32 @@ function PageIntent({biz,onUpdate}){
         <div style={{...r,gap:6}}><input value={newKw} onChange={e=>setNewKw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addKw()} placeholder="Add keyword..." style={{flex:1,padding:"6px 10px",borderRadius:6,border:`1px solid ${B}`,fontSize:12,outline:"none"}}/><button onClick={addKw} style={{...bt,padding:"6px 12px",fontSize:11}}>Add</button></div>
       </div>
 
-      {anyOn&&it.discovered&&<div style={{...cd,padding:mob?"10px 12px":"14px 16px",marginBottom:14}}>
-        <div style={{fontSize:13,fontWeight:600,color:T,marginBottom:4}}>Discovered communities</div>
-        <div style={{fontSize:11,color:U,marginBottom:10}}>Found based on your keywords.</div>
-        {Object.entries(it.discovered||{}).filter(([k,v])=>v.length>0&&it.platforms[k]).map(([k,v])=><div key={k} style={{marginBottom:8}}>
-          <div style={{fontSize:11,fontWeight:600,color:M,marginBottom:4}}>{k==="reddit"?"Reddit":"X"}</div>
-          <div style={{...r,flexWrap:"wrap",gap:4}}>{v.map((c,i)=><span key={i} style={{padding:"3px 8px",borderRadius:4,background:BL,fontSize:11,color:M}}>{c}</span>)}</div>
-        </div>)}
+      {it.platforms.reddit&&<div style={{...cd,padding:mob?"10px 12px":"14px 16px",marginBottom:14}}>
+        <div style={{fontSize:13,fontWeight:600,color:T,marginBottom:3}}>Reddit credentials</div>
+        <div style={{fontSize:11,color:U,marginBottom:10}}>Required to post replies. Scanning works without credentials. App type must be <strong>script</strong> at reddit.com/prefs/apps</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <div style={{...r,gap:8,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:mob?"100%":140}}><div style={lb}>Client ID</div><input value={redditCreds.client_id} onChange={e=>setRedditCreds(p=>({...p,client_id:e.target.value}))} placeholder="Under app name on Reddit" style={{width:"100%",padding:"6px 10px",borderRadius:6,border:`1px solid ${B}`,fontSize:12,outline:"none",boxSizing:"border-box",fontFamily:"monospace"}}/></div>
+            <div style={{flex:1,minWidth:mob?"100%":140}}><div style={lb}>Client Secret</div><input type="password" value={redditCreds.client_secret} onChange={e=>setRedditCreds(p=>({...p,client_secret:e.target.value}))} placeholder="secret field" style={{width:"100%",padding:"6px 10px",borderRadius:6,border:`1px solid ${B}`,fontSize:12,outline:"none",boxSizing:"border-box",fontFamily:"monospace"}}/></div>
+          </div>
+          <div style={{...r,gap:8,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:mob?"100%":140}}><div style={lb}>Reddit username</div><input value={redditCreds.username} onChange={e=>setRedditCreds(p=>({...p,username:e.target.value}))} placeholder="u/yourname" style={{width:"100%",padding:"6px 10px",borderRadius:6,border:`1px solid ${B}`,fontSize:12,outline:"none",boxSizing:"border-box"}}/></div>
+            <div style={{flex:1,minWidth:mob?"100%":140}}><div style={lb}>Reddit password</div><input type="password" value={redditCreds.password} onChange={e=>setRedditCreds(p=>({...p,password:e.target.value}))} placeholder="account password" style={{width:"100%",padding:"6px 10px",borderRadius:6,border:`1px solid ${B}`,fontSize:12,outline:"none",boxSizing:"border-box"}}/></div>
+          </div>
+          <div style={{...r,gap:8}}>
+            <button onClick={saveRedditCreds} disabled={savingCreds} style={{...btD,padding:"6px 16px",fontSize:12,opacity:savingCreds?.6:1}}>{savingCreds?"Saving…":"Save credentials"}</button>
+            {credsSaved&&<span style={{fontSize:11,color:"#16a34a"}}>✓ Saved</span>}
+          </div>
+        </div>
       </div>}
 
-      <div style={{padding:"10px 14px",borderRadius:8,background:BL,fontSize:12,color:U,lineHeight:1.6}}>
-        Scans every 2 hours. Reddit: searches subreddits via OAuth (free tier). X: searches recent tweets (requires Basic tier, $200/mo).
+      <div style={{padding:"10px 14px",borderRadius:8,background:BL,fontSize:12,color:U,lineHeight:1.6,marginBottom:14}}>
+        Scanning uses Reddit's public search API — no credentials needed. Credentials only required to post replies.
+      </div>
+
+      <div style={{...r,gap:8,paddingTop:4}}>
+        <button onClick={saveSettings} disabled={savingSettings} style={{...btD,padding:"8px 20px",fontSize:13,opacity:savingSettings?.6:1}}>{savingSettings?"Saving…":"Save settings"}</button>
+        {settingsSaved&&<span style={{fontSize:12,color:"#16a34a",fontWeight:500}}>✓ Settings saved</span>}
       </div>
     </div>}
   </div>;
@@ -1044,7 +1138,7 @@ export default function App(){
   </div>;
 
   const upd=u=>{const{id,name,voice,plats,pub,sched,pend,connections,...ui}=u;uiStore.set(u.id,ui);setBizList(p=>p.map(b=>b.id===u.id?u:b));};
-  const pc=biz.pend||0;const wc=Object.values(biz.connections||{}).filter(c=>c.status==="expiring"||c.status==="expired").length;const ib=Object.values(biz.intent?.platforms||{}).some(v=>v)?INTENT_OPPS.filter(o=>o.status==="pending").length:0;
+  const pc=biz.pend||0;const wc=Object.values(biz.connections||{}).filter(c=>c.status==="expiring"||c.status==="expired").length;const ib=0; // loaded dynamically inside PageIntent
   const nav=[{id:"home",label:"Overview",icon:"home"},{id:"create",label:"Create",icon:"spark"},{id:"templates",label:"Templates",icon:"tpl"},{id:"calendar",label:"Calendar",icon:"cal"},{id:"history",label:"History",icon:"clock",badge:pc},{id:"intent",label:"Intent sniping",icon:"target",badge:ib>0?ib:0},{id:"trending",label:"Trending",icon:"trending"},{id:"connections",label:"Connections",icon:"link",dot:wc>0},{id:"vault",label:"Context vault",icon:"folder"},{id:"settings",label:"Settings",icon:"gear"}];
   const addBiz=async(name,voice)=>{const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+"-"+Date.now();const res=await apiFetch("/api/businesses",{method:"POST",body:JSON.stringify({display_name:name,slug,brand_voice:voice||"",enabled_platforms:["instagram","facebook"]})});if(!res.ok){alert("Failed to create business");return;}const db=await res.json();const nb=dbBizToUi(db);setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections");};
   const removeBiz=async()=>{if(bizList.length<=1)return;await apiFetch(`/api/businesses/${bizId}`,{method:"DELETE"});const nx=bizList.find(b=>b.id!==bizId)?.id;setBizList(p=>p.filter(b=>b.id!==bizId));setBizId(nx);setRemoveModal(false);setPage("home")};

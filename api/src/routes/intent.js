@@ -309,4 +309,172 @@ router.get('/reply-limits/:business_id', async (req, res) => {
   }
 });
 
+// ═══ PUT /api/intent/settings/:business_id ═══
+// Save intent config (keywords, platforms, dailyCap, geo, mode) to DB
+router.put('/settings/:business_id', async (req, res) => {
+  try {
+    const { business_id } = req.params;
+    const { keywords, platforms, dailyCap, geo, mode, platformAuto } = req.body;
+    const intentConfig = {
+      keywords: keywords || [],
+      platforms: platforms || {},
+      dailyCap: dailyCap || {},
+      geo: geo || {},
+      mode: mode || 'off',
+      platformAuto: platformAuto || {},
+    };
+    const { rows } = await pool.query(
+      `UPDATE businesses SET intent_config = $1, updated_at = NOW()
+       WHERE id = $2 AND owner_id = $3 RETURNING id`,
+      [JSON.stringify(intentConfig), business_id, req.user.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Business not found' });
+    res.json({ saved: true, intent_config: intentConfig });
+  } catch (err) {
+    console.error('[intent] Save settings error:', err.message);
+    res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+// ═══ PUT /api/intent/credentials/:business_id ═══
+// Save Reddit credentials for this business
+router.put('/credentials/:business_id', async (req, res) => {
+  try {
+    const { business_id } = req.params;
+    const { reddit_client_id, reddit_client_secret, reddit_username, reddit_password } = req.body;
+    const { rows } = await pool.query(
+      `UPDATE businesses SET
+        reddit_client_id     = COALESCE($1, reddit_client_id),
+        reddit_client_secret = COALESCE($2, reddit_client_secret),
+        reddit_username      = COALESCE($3, reddit_username),
+        reddit_password      = COALESCE($4, reddit_password),
+        updated_at = NOW()
+       WHERE id = $5 AND owner_id = $6 RETURNING id`,
+      [reddit_client_id || null, reddit_client_secret || null,
+       reddit_username || null, reddit_password || null,
+       business_id, req.user.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Business not found' });
+    res.json({ saved: true });
+  } catch (err) {
+    console.error('[intent] Save credentials error:', err.message);
+    res.status(500).json({ error: 'Failed to save credentials' });
+  }
+});
+
+// ═══ POST /api/intent/scan/:business_id ═══
+// On-demand Reddit scan: search for posts matching business keywords
+router.post('/scan/:business_id', async (req, res) => {
+  try {
+    const { business_id } = req.params;
+    const { rows: [biz] } = await pool.query(
+      `SELECT intent_config, reddit_username FROM businesses WHERE id = $1 AND owner_id = $2`,
+      [business_id, req.user.id]
+    );
+    if (!biz) return res.status(404).json({ error: 'Business not found' });
+
+    const config = biz.intent_config || {};
+    const keywords = config.keywords || [];
+    const platforms = config.platforms || {};
+
+    if (!platforms.reddit) return res.status(400).json({ error: 'Reddit monitoring not enabled' });
+    if (keywords.length === 0) return res.status(400).json({ error: 'No keywords configured' });
+
+    const userAgent = `ContentEngine/1.0 (by /u/${biz.reddit_username || 'contentengine'})`;
+    const stored = [];
+
+    for (const keyword of keywords.slice(0, 5)) {
+      try {
+        const url = `https://www.reddit.com/search.json?q=${encodeURIComponent(keyword)}&sort=new&limit=25&t=week`;
+        const r = await fetch(url, { headers: { 'User-Agent': userAgent } });
+        if (!r.ok) { console.error('[intent] Reddit search failed:', r.status, keyword); continue; }
+        const data = await r.json();
+        const posts = data?.data?.children || [];
+
+        for (const { data: p } of posts) {
+          if (!p.id) continue;
+          const sourceId = 't3_' + p.id;
+          const sourceText = (p.title + (p.selftext ? '\n\n' + p.selftext : '')).slice(0, 1000);
+          const textLower = sourceText.toLowerCase();
+          const matched = keywords.filter(kw => textLower.includes(kw.toLowerCase()));
+          if (matched.length === 0) continue; // skip irrelevant posts
+
+          const { rows } = await pool.query(
+            `INSERT INTO intent_opportunities
+             (business_id, platform, source_url, source_id, source_author,
+              source_text, source_subreddit, matched_keywords, relevance_score, status)
+             VALUES ($1, 'reddit', $2, $3, $4, $5, $6, $7, $8, 'queued')
+             ON CONFLICT (business_id, source_id) DO NOTHING RETURNING *`,
+            [business_id, `https://reddit.com${p.permalink}`, sourceId, p.author,
+             sourceText, p.subreddit_name_prefixed, matched, matched.length >= 2 ? 0.85 : 0.65]
+          );
+          if (rows.length > 0) stored.push(rows[0]);
+        }
+      } catch (kwErr) {
+        console.error('[intent] Keyword scan error:', keyword, kwErr.message);
+      }
+    }
+
+    res.json({ scanned: keywords.length, stored: stored.length, opportunities: stored });
+  } catch (err) {
+    console.error('[intent] Scan error:', err.message);
+    res.status(500).json({ error: 'Scan failed: ' + err.message });
+  }
+});
+
+// ═══ POST /api/intent/generate-reply/:id ═══
+// Use Claude to generate a reply for a specific opportunity
+router.post('/generate-reply/:id', async (req, res) => {
+  try {
+    const { rows: [opp] } = await pool.query(
+      `SELECT io.*, b.brand_voice, b.display_name
+       FROM intent_opportunities io
+       JOIN businesses b ON b.id = io.business_id
+       WHERE io.id = $1`,
+      [req.params.id]
+    );
+    if (!opp) return res.status(404).json({ error: 'Opportunity not found' });
+
+    const prompt = `You are a social media manager for "${opp.display_name}".
+Brand voice: ${opp.brand_voice || 'Professional, helpful and authentic.'}
+
+A ${opp.platform === 'reddit' ? `Reddit post in ${opp.source_subreddit}` : 'tweet'} was found relevant to this business:
+
+Author: u/${opp.source_author}
+Post: "${opp.source_text}"
+
+Write a genuine, helpful reply that adds real value. Subtly associate with the business if natural — never be spammy or pushy.
+Keep it 2-4 sentences. No hashtags. Sound like a real person.
+Reply ONLY with the reply text.`;
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+
+    const aiData = await aiRes.json();
+    const reply = aiData.content?.[0]?.text?.trim();
+    if (!reply) return res.status(500).json({ error: 'Claude returned no reply' });
+
+    const { rows } = await pool.query(
+      `UPDATE intent_opportunities SET generated_reply = $1, status = 'pending', updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [reply, req.params.id]
+    );
+    res.json({ generated: true, opportunity: rows[0] });
+  } catch (err) {
+    console.error('[intent] Generate reply error:', err.message);
+    res.status(500).json({ error: 'Failed to generate reply' });
+  }
+});
+
 export default router;
