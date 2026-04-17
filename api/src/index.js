@@ -15,6 +15,7 @@ import trendingRoutes from './routes/trending.js';
 import engagementRoutes from './routes/engagement.js';
 import scheduleRoutes from './routes/schedule.js';
 import dubbingRoutes from './routes/dubbing.js';
+import generateRoutes from './routes/generate.js';
 import { authMiddleware } from './middleware/auth.js';
 
 dotenv.config();
@@ -43,6 +44,7 @@ app.use('/api/trending', authMiddleware, trendingRoutes);
 app.use('/api/engagement', authMiddleware, engagementRoutes);
 app.use('/api/schedule', authMiddleware, scheduleRoutes);
 app.use('/api/dubbing', authMiddleware, dubbingRoutes);
+app.use('/api/generate', authMiddleware, generateRoutes);
 
 // ─── Error Handler ───
 app.use((err, req, res, next) => {

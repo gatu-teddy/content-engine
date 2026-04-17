@@ -224,7 +224,7 @@ function PageCreate({biz,onDone}){
   const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");
   const[selPlats,setSelPlats]=useState(biz.plats);
   const im=(IMGM.find(m=>m.id===(biz.imageModel||"nano_banana_2"))||IMGM[0]).l;
-  const doGen=()=>{if(!brief.trim())return;setGen(true);setTimeout(()=>{setGen(false);setResult(GEN)},2500)};
+  const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const data=await r.json();setResult(data);}catch(e){alert("Generation failed: "+e.message);}finally{setGen(false);}};
   const smartSched=()=>{const now=new Date();const dow=now.getDay();const optH={instagram:[9,10,11,10,11,10,9],x:[10,8,9,9,8,8,10],facebook:[11,9,10,10,9,9,11],tiktok:[10,14,15,14,15,14,10],linkedin:[10,8,9,8,9,8,10],youtube:[14,13,14,13,12,12,13]};const p=selPlats.find(s=>s!=="off")||"instagram";const h=(optH[p]||[])[dow]||10;const d=new Date(now);if(h<=now.getHours())d.setDate(d.getDate()+1);d.setHours(h,0,0,0);setSchedTime(d.toISOString().slice(0,16))};
   const fillFromTpl=(name)=>{const t=TPLS.find(tp=>tp.name===name);if(t&&t.brief)setBrief(t.brief)};
   const togglePlat=(k)=>setSelPlats(p=>p.includes(k)?p.filter(x=>x!==k):[...p,k]);
@@ -237,7 +237,7 @@ function PageCreate({biz,onDone}){
       {Object.entries(result).map(([k,v])=>{const isVideo=v.video;const platLabel=PM[k]?.l;return <div key={k} style={{...cd,overflow:"hidden"}}>
         <div style={{...r,justifyContent:"space-between",padding:"10px 16px",borderBottom:`1px solid ${BL}`}}>
           <div style={{...r,gap:8}}><span style={{fontSize:12,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{platLabel}</span>{isVideo?<span style={{fontSize:10,fontWeight:600,color:"#16a34a",background:"#f0fdf4",padding:"2px 8px",borderRadius:4}}>{k==="instagram"?"Reel":k==="youtube"?"Short":"Video"}</span>:<span style={{fontSize:10,color:U,background:BL,padding:"2px 8px",borderRadius:4}}>Image</span>}</div>
-          <button onClick={()=>{setResult(null);setTimeout(()=>setResult(GEN),1500)}} style={{padding:"2px 8px",borderRadius:4,border:`1px solid ${B}`,background:W,fontSize:10,cursor:"pointer",color:U,minHeight:28}}>Regenerate</button>
+          <button onClick={()=>{setResult(null);doGen();}} style={{padding:"2px 8px",borderRadius:4,border:`1px solid ${B}`,background:W,fontSize:10,cursor:"pointer",color:U,minHeight:28}}>Regenerate</button>
         </div>
         <div style={{padding:"14px 16px"}}>
           <div style={{display:"flex",gap:14}}>
@@ -245,7 +245,9 @@ function PageCreate({biz,onDone}){
               <div style={{width:28,height:28,borderRadius:14,background:W,border:`1px solid ${B}`,...r,justifyContent:"center"}}><svg width="12" height="12" viewBox="0 0 24 24" fill={T} stroke="none"><polygon points="8,5 20,12 8,19"/></svg></div>
               <span style={{fontSize:10,color:U,marginTop:4}}>Preview</span>
               <span style={{position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,0.55)",color:"#fff",fontSize:9,padding:"1px 5px",borderRadius:3}}>{v.assets?.dur||"0:10"}</span>
-            </div>:<div style={{width:mob?80:120,height:mob?80:120,borderRadius:8,background:BL,...r,justifyContent:"center",flexShrink:0}}><span style={{fontSize:10,color:U}}>Image</span></div>}
+            </div>:<div style={{width:mob?80:120,height:mob?80:120,borderRadius:8,background:BL,...r,justifyContent:"center",flexShrink:0,overflow:"hidden"}}>
+              {(v.image_url||result.image_url)?<img src={v.image_url||result.image_url} alt="Generated" style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:10,color:U}}>Image</span>}
+            </div>}
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,color:M,whiteSpace:"pre-wrap",lineHeight:1.6}}>{v.text||v.caption||v.message||v.title}</div>
               {v.hashtags&&<div style={{marginTop:6,fontSize:11,color:"#2563eb"}}>{v.hashtags.map(h=>"#"+h).join(" ")}</div>}
