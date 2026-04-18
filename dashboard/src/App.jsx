@@ -781,6 +781,7 @@ function PageIntent({biz,onUpdate}){
   const[opps,setOpps]=useState([]);
   const[loadingOpps,setLoadingOpps]=useState(false);
   const[scanning,setScanning]=useState(false);
+  const[scanMsg,setScanMsg]=useState("");
   const[savingSettings,setSavingSettings]=useState(false);
   const[settingsSaved,setSettingsSaved]=useState(false);
   const[generatingId,setGeneratingId]=useState(null);
@@ -833,9 +834,10 @@ function PageIntent({biz,onUpdate}){
   const doScan=async()=>{
     setScanning(true);
     const r=await apiFetch(`/api/intent/scan/${biz.id}`,{method:"POST"});
-    if(r.ok){const d=await r.json();await loadOpps();alert(d.message||`Scan complete: ${d.stored} new opportunities found.`);}
-    else{const d=await r.json().catch(()=>({}));alert("Scan failed: "+(d.error||"Unknown error"));}
+    if(r.ok){const d=await r.json();setScanMsg(d.message||`Scan complete: ${d.stored} new opportunities found.`);await loadOpps();}
+    else{const d=await r.json().catch(()=>({}));setScanMsg("Scan failed: "+(d.error||"Unknown error"));}
     setScanning(false);
+    setTimeout(()=>setScanMsg(""),6000);
   };
 
   // Generate reply for an opportunity
@@ -881,8 +883,8 @@ function PageIntent({biz,onUpdate}){
       {anyOn&&<>
         <div style={{...r,gap:8,marginBottom:14,flexWrap:"wrap"}}>
           <button onClick={doScan} disabled={scanning} style={{...btD,padding:"6px 16px",fontSize:12,opacity:scanning?.6:1}}>{scanning?"Scanning…":"🔍 Scan now"}</button>
-          <button onClick={loadOpps} style={{...bt,padding:"6px 12px",fontSize:12}}>Refresh</button>
-          {loadingOpps&&<span style={{fontSize:11,color:U}}>Loading…</span>}
+          <button onClick={loadOpps} disabled={loadingOpps} style={{...bt,padding:"6px 12px",fontSize:12}}>{loadingOpps?"Loading…":"Refresh"}</button>
+          {scanMsg&&<span style={{fontSize:11,color:scanMsg.includes("failed")?"#dc2626":"#16a34a",fontWeight:500}}>{scanMsg}</span>}
         </div>
         <RGrid cols={4} tabCols={2} mobCols={2} gap={8} style={{marginBottom:10}}>
           {[{l:"Opportunities",v:opps.filter(o=>o.status!=="dismissed").length},{l:"Pending",v:pending},{l:"Queued",v:queued},{l:"Posted",v:opps.filter(o=>o.status==="posted").length}].map(s=><div key={s.l} style={{...cd,padding:mob?"10px 12px":"12px 14px"}}><div style={{fontSize:mob?18:20,fontWeight:700,color:T}}>{s.v}</div><div style={{fontSize:mob?10:11,color:U,marginTop:1}}>{s.l}</div></div>)}
