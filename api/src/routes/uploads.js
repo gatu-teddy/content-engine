@@ -7,14 +7,27 @@ import { pool } from '../db.js';
 const router = Router();
 
 // ─── S3/R2 Client ───
-const s3 = new S3Client({
-  region: 'auto',
-  endpoint: process.env.S3_ENDPOINT,
+// AWS S3: set S3_REGION (e.g. us-east-1), leave S3_ENDPOINT unset
+// Cloudflare R2 / custom: set S3_ENDPOINT, leave S3_REGION unset
+const s3Config = {
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY,
     secretAccessKey: process.env.S3_SECRET_KEY,
   },
-});
+};
+if (process.env.S3_ENDPOINT) {
+  s3Config.region = 'auto';
+  s3Config.endpoint = process.env.S3_ENDPOINT;
+} else {
+  s3Config.region = process.env.S3_REGION || 'us-east-1';
+}
+const s3 = new S3Client(s3Config);
+
+function getPublicUrl(key) {
+  if (process.env.S3_PUBLIC_URL) return `${process.env.S3_PUBLIC_URL}/${key}`;
+  // Auto-construct AWS S3 URL if no custom public URL set
+  return `https://${process.env.S3_BUCKET}.s3.${process.env.S3_REGION || 'us-east-1'}.amazonaws.com/${key}`;
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -28,7 +41,7 @@ async function uploadToS3(buffer, key, contentType) {
     Body: buffer,
     ContentType: contentType,
   }));
-  return `${process.env.S3_PUBLIC_URL}/${key}`;
+  return getPublicUrl(key);
 }
 
 // POST /api/uploads/document/:businessId — Upload context document
