@@ -7,9 +7,12 @@ const setJwt = t => localStorage.setItem('ce_jwt', t);
 const clearJwt = () => localStorage.removeItem('ce_jwt');
 async function apiFetch(path, opts = {}) {
   const jwt = getJwt();
+  // Don't set Content-Type for FormData — browser must set it with the multipart boundary
+  const isFormData = opts.body instanceof FormData;
+  const baseHeaders = { ...(isFormData ? {} : { 'Content-Type': 'application/json' }), ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}) };
   const res = await fetch(`${API_URL}${path}`, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}), ...(opts.headers || {}) },
+    headers: { ...baseHeaders, ...(opts.headers || {}) },
   });
   if (res.status === 401) { clearJwt(); window.location.reload(); }
   return res;
@@ -497,13 +500,15 @@ function PageVault({biz}){
 
   const uploadDoc=async(file)=>{
     const fd=new FormData();fd.append("file",file);
-    const r=await apiFetch(`/api/uploads/document/${biz.id}`,{method:"POST",body:fd,headers:{}});
+    const r=await apiFetch(`/api/uploads/document/${biz.id}`,{method:"POST",body:fd});
     if(r.ok){const d=await r.json();setDocList(p=>[d,...p]);}
+    else{const e=await r.json().catch(()=>({}));alert("Upload failed: "+(e.error||r.status));}
   };
   const uploadImg=async(file)=>{
     const fd=new FormData();fd.append("file",file);fd.append("label",file.name.split(".")[0]);
-    const r=await apiFetch(`/api/uploads/image/${biz.id}`,{method:"POST",body:fd,headers:{}});
+    const r=await apiFetch(`/api/uploads/image/${biz.id}`,{method:"POST",body:fd});
     if(r.ok){const d=await r.json();setImgList(p=>[d,...p]);}
+    else{const e=await r.json().catch(()=>({}));alert("Upload failed: "+(e.error||r.status));}
   };
   const remDoc=async(doc)=>{
     await apiFetch(`/api/uploads/document/${biz.id}/${doc.id}`,{method:"DELETE"});
