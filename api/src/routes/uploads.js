@@ -107,8 +107,8 @@ router.post('/image/:businessId', upload.single('file'), async (req, res) => {
 router.get('/documents/:businessId', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, filename, file_url, file_type, file_size_bytes, created_at
-       FROM context_documents WHERE business_id = $1 ORDER BY created_at DESC`,
+      `SELECT id, filename, file_url, file_type, file_size_bytes, uploaded_at
+       FROM context_documents WHERE business_id = $1 ORDER BY uploaded_at DESC`,
       [req.params.businessId]
     );
     res.json(result.rows);
@@ -136,8 +136,8 @@ router.delete('/document/:businessId/:docId', async (req, res) => {
 router.get('/images/:businessId', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, filename, file_url, label, file_size_bytes, created_at
-       FROM reference_images WHERE business_id = $1 ORDER BY created_at DESC`,
+      `SELECT id, filename, file_url, label, file_size_bytes, uploaded_at
+       FROM reference_images WHERE business_id = $1 ORDER BY uploaded_at DESC`,
       [req.params.businessId]
     );
     res.json(result.rows);
