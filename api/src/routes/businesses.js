@@ -147,6 +147,22 @@ router.get('/:id/oauth-url/:platform', async (req, res) => {
     const bizResult = await pool.query('SELECT id FROM businesses WHERE id = $1 AND owner_id = $2', [id, req.user.id]);
     if (bizResult.rows.length === 0) return res.status(404).json({ error: 'Business not found' });
 
+    const base = process.env.API_BASE_URL || 'https://engine.yourdomain.com';
+    const redirectUriRaw = `${base}/api/oauth/callback/${platform}/${id}`;
+    const redirectUri = encodeURIComponent(redirectUriRaw);
+
+    // ── X/Twitter uses OAuth 2.0 + PKCE (required even for confidential clients) ──
+    if (platform === 'x') {
+      const crypto = await import('crypto');
+      const codeVerifier = crypto.randomBytes(32).toString('base64url');
+      const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+      // Encode verifier in state so the callback can retrieve it without a DB round-trip
+      const state = Buffer.from(JSON.stringify({ biz: id, cv: codeVerifier })).toString('base64url');
+      const clientId = process.env.X_CLIENT_ID || 'NOT_CONFIGURED';
+      const url = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&scope=tweet.read%20tweet.write%20users.read%20offline.access&state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+      return res.json({ url, platform, business_id: id });
+    }
+
     const OAUTH_URLS = {
       instagram: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list,business_management&response_type=code',
       facebook: 'https://www.facebook.com/v21.0/dialog/oauth?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&scope=pages_read_engagement,pages_show_list,business_management&response_type=code',
@@ -160,8 +176,6 @@ router.get('/:id/oauth-url/:platform', async (req, res) => {
 
     const CLIENT_ID_MAP = { instagram: 'FACEBOOK_CLIENT_ID', facebook: 'FACEBOOK_CLIENT_ID', linkedin: 'LINKEDIN_CLIENT_ID', tiktok: 'TIKTOK_CLIENT_ID', youtube: 'YOUTUBE_CLIENT_ID' };
     const clientId = process.env[CLIENT_ID_MAP[platform]] || process.env[`${platform.toUpperCase()}_CLIENT_ID`] || 'NOT_CONFIGURED';
-    const base = process.env.API_BASE_URL || 'https://engine.yourdomain.com';
-    const redirectUri = encodeURIComponent(`${base}/api/oauth/callback/${platform}/${id}`);
     const url = templateUrl.replace('{CLIENT_ID}', clientId).replace('{REDIRECT_URI}', redirectUri);
 
     res.json({ url, platform, business_id: id });

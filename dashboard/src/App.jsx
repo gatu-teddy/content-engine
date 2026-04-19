@@ -125,6 +125,42 @@ const Modal=({onClose,width=400,children})=>{
   </div>;
 };
 
+/* ═══ IMAGE LIGHTBOX ═══ */
+function ImageLightbox({src,onClose}){
+  useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose();};document.addEventListener("keydown",h);return()=>document.removeEventListener("keydown",h);},[]);
+  return <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:9000,display:"flex",alignItems:"center",justifyContent:"center",cursor:"zoom-out"}}>
+    <img src={src} alt="Preview" onClick={e=>e.stopPropagation()} style={{maxWidth:"90vw",maxHeight:"90vh",borderRadius:10,objectFit:"contain",boxShadow:"0 8px 40px rgba(0,0,0,.5)",cursor:"default"}}/>
+    <button onClick={onClose} style={{position:"absolute",top:16,right:16,background:"rgba(255,255,255,.12)",border:"none",color:"#fff",fontSize:18,cursor:"pointer",width:38,height:38,borderRadius:19,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>✕</button>
+  </div>;
+}
+
+/* ═══ CONTENT DETAIL MODAL ═══ */
+function ContentDetailModal({item,onClose}){
+  const{mob}=useMedia();
+  const[lb,setLb]=useState(null);
+  const plats=item.platforms||Object.keys(item.variants||{}).filter(k=>PM[k]);
+  const vars=item.variants||{};
+  const imgUrl=item.image_url||Object.values(vars).find(v=>v?.image_url)?.image_url||null;
+  return <Modal onClose={onClose} width={580}>
+    <div style={{fontSize:15,fontWeight:700,color:T,marginBottom:6,lineHeight:1.4}}>{item.brief}</div>
+    <div style={{...r,gap:8,marginBottom:14,flexWrap:"wrap"}}>
+      <span style={{fontSize:11,color:U}}>{fd(item.created_at)}</span>
+      <Sd s={item.status}/>
+      <Pl p={plats}/>
+    </div>
+    {imgUrl&&<div style={{marginBottom:14,borderRadius:8,overflow:"hidden",cursor:"zoom-in"}} onClick={()=>setLb(imgUrl)}>
+      <img src={imgUrl} alt="Generated" style={{width:"100%",maxHeight:260,objectFit:"cover",display:"block"}}/>
+      <div style={{fontSize:10,color:U,padding:"4px 0",textAlign:"center"}}>Click to zoom</div>
+    </div>}
+    {plats.filter(k=>vars[k]).map(k=>{const v=vars[k];const text=v.text||v.caption||v.message||v.title||"";const tags=v.hashtags||[];return <div key={k} style={{...cd,padding:"10px 14px",marginBottom:8}}>
+      <div style={{fontSize:11,fontWeight:600,color:T,background:BL,display:"inline-block",padding:"2px 8px",borderRadius:4,marginBottom:6}}>{PM[k]?.l}</div>
+      <div style={{fontSize:13,color:M,whiteSpace:"pre-wrap",lineHeight:1.6}}>{text}</div>
+      {tags.length>0&&<div style={{marginTop:4,fontSize:11,color:"#2563eb"}}>{tags.map(h=>"#"+h).join(" ")}</div>}
+    </div>;})}
+    {lb&&<ImageLightbox src={lb} onClose={()=>setLb(null)}/>}
+  </Modal>;
+}
+
 /* ═══ PAGE PICKER MODAL ═══ */
 function PagePickerModal({token,platform,onDone,onClose}){
   const[pages,setPages]=useState(null);const[saving,setSaving]=useState(false);const[err,setErr]=useState("");
@@ -225,7 +261,7 @@ function PageHome({biz}){
 
 function PageCreate({biz,onDone}){
   const{mob}=useMedia();
-  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");
+  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");const[lightbox,setLightbox]=useState(null);
   const[selPlats,setSelPlats]=useState(biz.plats);
   const im=(IMGM.find(m=>m.id===(biz.imageModel||"nano_banana_2"))||IMGM[0]).l;
   const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const raw=await r.json();console.log("[generate] raw response:", raw);// n8n may return {variants:{...}, image_url:...} or wrap in array
@@ -256,7 +292,7 @@ function PageCreate({biz,onDone}){
               <div style={{width:28,height:28,borderRadius:14,background:W,border:`1px solid ${B}`,...r,justifyContent:"center"}}><svg width="12" height="12" viewBox="0 0 24 24" fill={T} stroke="none"><polygon points="8,5 20,12 8,19"/></svg></div>
               <span style={{fontSize:10,color:U,marginTop:4}}>Preview</span>
               <span style={{position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,0.55)",color:"#fff",fontSize:9,padding:"1px 5px",borderRadius:3}}>{v.assets?.dur||"0:10"}</span>
-            </div>:<div style={{width:mob?80:120,height:mob?80:120,borderRadius:8,background:BL,...r,justifyContent:"center",flexShrink:0,overflow:"hidden"}}>
+            </div>:<div style={{width:mob?80:120,height:mob?80:120,borderRadius:8,background:BL,...r,justifyContent:"center",flexShrink:0,overflow:"hidden",cursor:(v.image_url||result.image_url)?"zoom-in":"default"}} onClick={()=>{const u=v.image_url||result.image_url;if(u)setLightbox(u);}}>
               {(v.image_url||result.image_url)?<img src={v.image_url||result.image_url} alt="Generated" style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:10,color:U}}>Image</span>}
             </div>}
             <div style={{flex:1,minWidth:0}}>
@@ -289,6 +325,7 @@ function PageCreate({biz,onDone}){
       <span style={{fontSize:11,color:U}}>Estimated generation cost</span>
       <span style={{fontSize:11,fontWeight:600,color:T}}>~$0.38 ({Object.entries(result).filter(([k])=>(biz.videoRatio||{})[k]>0&&result[k]?.video).length} video + {Object.entries(result).filter(([k])=>!((biz.videoRatio||{})[k]>0&&result[k]?.video)).length} image)</span>
     </div>}
+    {lightbox&&<ImageLightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
   </div>;
   return <div>
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 4px",color:T}}>Create content</h1>
@@ -430,6 +467,7 @@ function PageHistory({biz}){
   const{mob}=useMedia();
   const[items,setItems]=useState([]);
   const[loading,setLoading]=useState(true);
+  const[expanded,setExpanded]=useState(null);
   useEffect(()=>{
     setLoading(true);
     apiFetch(`/api/content?business_id=${biz.id}&limit=50`)
@@ -437,7 +475,8 @@ function PageHistory({biz}){
       .then(d=>{setItems(Array.isArray(d)?d:(d.items||[]));setLoading(false);})
       .catch(()=>setLoading(false));
   },[biz.id]);
-  const approve=async(id)=>{
+  const approve=async(id,e)=>{
+    e.stopPropagation();
     await apiFetch(`/api/content/${id}`,{method:"PUT",body:JSON.stringify({status:"scheduled"})});
     setItems(prev=>prev.map(c=>c.id===id?{...c,status:"scheduled"}:c));
   };
@@ -445,12 +484,16 @@ function PageHistory({biz}){
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 16px",color:T}}>History</h1>
     {loading&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>Loading…</div>}
     {!loading&&items.length===0&&<div style={{color:U,fontSize:13,padding:"20px 0",textAlign:"center"}}>No content yet. Generate your first post!</div>}
-    {items.map(c=>{const plats=c.platforms||Object.keys(c.variants||{}).filter(k=>PM[k]);return <div key={c.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
+    {items.map(c=>{const plats=c.platforms||Object.keys(c.variants||{}).filter(k=>PM[k]);const imgUrl=c.image_url||Object.values(c.variants||{}).find(v=>v?.image_url)?.image_url||null;return <div key={c.id} onClick={()=>setExpanded(c)} style={{...cd,padding:"12px 16px",marginBottom:8,cursor:"pointer",transition:"box-shadow .15s"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,.08)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
       <div style={{...(mob?{display:"flex",flexDirection:"column",gap:6}:r),justifyContent:"space-between"}}>
-        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.brief}</div><div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{fd(c.created_at)}</span><Pl p={plats}/></div></div>
-        <div style={{...r,gap:10,flexWrap:"wrap"}}><Sd s={c.status}/>{c.status==="pending_review"&&<button onClick={()=>approve(c.id)} style={{...btD,padding:"4px 10px",fontSize:11}}>Approve</button>}</div>
+        <div style={{...r,gap:10,flex:1,minWidth:0}}>
+          {imgUrl&&<img src={imgUrl} alt="" style={{width:44,height:44,borderRadius:6,objectFit:"cover",flexShrink:0}}/>}
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.brief}</div><div style={{...r,gap:6,flexWrap:"wrap"}}><span style={{fontSize:11,color:U}}>{fd(c.created_at)}</span><Pl p={plats}/></div></div>
+        </div>
+        <div style={{...r,gap:10,flexWrap:"wrap"}}><Sd s={c.status}/>{c.status==="pending_review"&&<button onClick={e=>approve(c.id,e)} style={{...btD,padding:"4px 10px",fontSize:11}}>Approve</button>}</div>
       </div>
     </div>;})}
+    {expanded&&<ContentDetailModal item={expanded} onClose={()=>setExpanded(null)}/>}
   </div>;
 }
 
@@ -484,6 +527,7 @@ function PageVault({biz}){
   const[loading,setLoading]=useState(true);
   const[docList,setDocList]=useState([]);
   const[imgList,setImgList]=useState([]);
+  const[vaultLightbox,setVaultLightbox]=useState(null);
   const ts=a=>({padding:"6px 14px",borderRadius:6,border:"none",fontSize:12,fontWeight:500,cursor:"pointer",background:a?W:"transparent",color:a?T:U,minHeight:32});
   const typeColor=(t)=>t==="JSX"||t==="JS"||t==="TSX"||t==="JSON"?"#7c3aed":t==="PDF"?"#dc2626":t==="MD"?"#2563eb":"#0891b2";
   const fmtSize=(b)=>b>1048576?(b/1048576).toFixed(1)+" MB":(b/1024).toFixed(0)+" KB";
@@ -553,14 +597,15 @@ function PageVault({biz}){
     {!loading&&tab==="imgs"&&<div>
       <RGrid cols={5} tabCols={3} mobCols={2} gap={8}>
         {imgList.map((img)=><div key={img.id} style={{...cd,overflow:"hidden",position:"relative"}}>
-          <div style={{aspectRatio:"1",background:BL,overflow:"hidden"}}>{img.file_url&&<img src={img.file_url} alt={img.label} style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>
-          <div style={{padding:"6px 8px",...r,justifyContent:"space-between"}}><span style={{fontSize:11,color:M,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{img.label||img.filename}</span><button onClick={()=>remImg(img)} style={{...btR,padding:"1px 6px",fontSize:10}}>×</button></div>
+          <div style={{aspectRatio:"1",background:BL,overflow:"hidden",cursor:img.file_url?"zoom-in":"default"}} onClick={()=>img.file_url&&setVaultLightbox(img.file_url)}>{img.file_url&&<img src={img.file_url} alt={img.label} style={{width:"100%",height:"100%",objectFit:"cover"}}/>}</div>
+          <div style={{padding:"6px 8px",...r,justifyContent:"space-between"}}><span style={{fontSize:11,color:M,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{img.label||img.filename}</span><button onClick={e=>{e.stopPropagation();remImg(img);}} style={{...btR,padding:"1px 6px",fontSize:10}}>×</button></div>
         </div>)}
       </RGrid>
       {imgList.length===0&&<div style={{fontSize:12,color:U,padding:"12px 0"}}>No images yet.</div>}
       <input type="file" id="imgUp" accept="image/*" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)uploadImg(f);e.target.value="";}}/>
       <button onClick={()=>document.getElementById("imgUp").click()} style={{...bt,borderStyle:"dashed",marginTop:10}}>Upload image</button>
       <div style={{marginTop:10,fontSize:11,color:U,lineHeight:1.5}}>Reference images for the AI image generator.</div>
+      {vaultLightbox&&<ImageLightbox src={vaultLightbox} onClose={()=>setVaultLightbox(null)}/>}
     </div>}
   </div>;
 }

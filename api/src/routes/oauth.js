@@ -51,6 +51,12 @@ const PLATFORM_CONFIG = {
     client_secret_env: 'YOUTUBE_CLIENT_SECRET',
     token_lifetime_days: null, // uses refresh_token, no fixed expiry
   },
+  x: {
+    token_url: 'https://api.twitter.com/2/oauth2/token',
+    client_id_env: 'X_CLIENT_ID',
+    client_secret_env: 'X_CLIENT_SECRET',
+    token_lifetime_days: null, // short-lived (~2 hrs); expires_in drives expiry, refresh_token used
+  },
 };
 
 
@@ -111,6 +117,17 @@ router.get('/callback/:platform/:businessId', async (req, res) => {
       tokens = await exchangeTikTokToken(config, clientId, clientSecret, code, redirectUri);
     } else if (platform === 'youtube') {
       tokens = await exchangeGoogleToken(config, clientId, clientSecret, code, redirectUri);
+    } else if (platform === 'x') {
+      // Decode PKCE verifier from state param (encoded by oauth-url endpoint)
+      const { state } = req.query;
+      let codeVerifier = null;
+      try {
+        const stateData = JSON.parse(Buffer.from(state, 'base64url').toString());
+        codeVerifier = stateData.cv;
+      } catch {
+        console.error('[oauth] X: failed to decode state/PKCE verifier');
+      }
+      tokens = await exchangeXToken(clientId, clientSecret, code, redirectUri, codeVerifier);
     }
 
     if (!tokens || tokens.error) {
@@ -340,6 +357,45 @@ async function exchangeGoogleToken(config, clientId, clientSecret, code, redirec
 }
 
 
+async function exchangeXToken(clientId, clientSecret, code, redirectUri, codeVerifier) {
+  const resp = await fetch('https://api.twitter.com/2/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+    },
+    body: new URLSearchParams({
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier || '',
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.error) return { error: data.error_description || data.error };
+
+  // Fetch the authenticated user's handle
+  let handle = null;
+  try {
+    const userResp = await fetch('https://api.twitter.com/2/users/me', {
+      headers: { 'Authorization': `Bearer ${data.access_token}` },
+    });
+    const userData = await userResp.json();
+    handle = userData.data?.username ? `@${userData.data.username}` : null;
+  } catch { /* non-fatal */ }
+
+  return {
+    credentials: {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || null,
+      name: handle,
+    },
+    expires_in: data.expires_in, // ~7200 (2 hrs)
+  };
+}
+
+
 // ─── GET /api/oauth/pending/:token — fetch pages for picker ───
 router.get('/pending/:token', async (req, res) => {
   try {
@@ -478,6 +534,21 @@ router.post('/refresh/:platform/:businessId', async (req, res) => {
       const data = await resp.json();
       if (data.error) return res.json({ error: data.error_description });
       newTokens = { ...creds, access_token: data.access_token };
+    } else if (platform === 'x' && creds.refresh_token) {
+      const resp = await fetch('https://api.twitter.com/2/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: creds.refresh_token,
+        }),
+      });
+      const data = await resp.json();
+      if (data.error) return res.json({ error: data.error_description || data.error });
+      newTokens = { ...creds, access_token: data.access_token, refresh_token: data.refresh_token || creds.refresh_token };
     } else {
       return res.json({ error: `No refresh mechanism for ${platform} or no refresh token stored` });
     }
