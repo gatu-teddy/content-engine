@@ -125,6 +125,34 @@ const Modal=({onClose,width=400,children})=>{
   </div>;
 };
 
+/* ═══ PLATFORM PREVIEW MODAL ═══ */
+function PlatformPreviewModal({platform,variant,onClose}){
+  const{mob}=useMedia();
+  const[lb,setLb]=useState(null);
+  const pm=PM[platform];
+  const text=variant.text||variant.caption||variant.message||variant.title||"";
+  const tags=variant.hashtags||[];
+  const imgUrl=variant.image_url||null;
+  const isVideo=variant.video;
+  return <Modal onClose={onClose} width={560}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+      <span style={{fontSize:15,fontWeight:700,color:T}}>{pm?.l}</span>
+      {isVideo?<span style={{fontSize:11,fontWeight:600,color:"#16a34a",background:"#f0fdf4",padding:"2px 8px",borderRadius:4}}>{platform==="instagram"?"Reel":platform==="youtube"?"Short":"Video"}</span>:<span style={{fontSize:11,color:U,background:BL,padding:"2px 8px",borderRadius:4}}>Image post</span>}
+    </div>
+    {imgUrl&&<div onClick={()=>setLb(imgUrl)} style={{borderRadius:10,overflow:"hidden",marginBottom:16,cursor:"zoom-in",position:"relative"}}>
+      <img src={imgUrl} alt="Generated" style={{width:"100%",maxHeight:mob?220:320,objectFit:"cover",display:"block"}}/>
+      <div style={{position:"absolute",bottom:8,right:8,background:"rgba(0,0,0,.5)",color:"#fff",fontSize:10,padding:"3px 8px",borderRadius:4,pointerEvents:"none"}}>Click to zoom</div>
+    </div>}
+    <div style={{fontSize:14,color:M,whiteSpace:"pre-wrap",lineHeight:1.75,marginBottom:tags.length?12:0}}>{text}</div>
+    {tags.length>0&&<div style={{fontSize:12,color:"#2563eb",lineHeight:1.8}}>{tags.map(h=>"#"+h).join(" ")}</div>}
+    {isVideo&&variant.voiceover&&<div style={{marginTop:14,padding:"10px 12px",borderRadius:8,background:BL}}>
+      <div style={{fontSize:11,fontWeight:600,color:M,marginBottom:4}}>Voiceover script</div>
+      <div style={{fontSize:12,color:U,lineHeight:1.6,fontStyle:"italic"}}>{variant.voiceover}</div>
+    </div>}
+    {lb&&<ImageLightbox src={lb} onClose={()=>setLb(null)}/>}
+  </Modal>;
+}
+
 /* ═══ IMAGE LIGHTBOX ═══ */
 function ImageLightbox({src,onClose}){
   useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose();};document.addEventListener("keydown",h);return()=>document.removeEventListener("keydown",h);},[]);
@@ -261,7 +289,7 @@ function PageHome({biz}){
 
 function PageCreate({biz,onDone}){
   const{mob}=useMedia();
-  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");const[lightbox,setLightbox]=useState(null);const[contentId,setContentId]=useState(null);const[approving,setApproving]=useState(false);
+  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");const[contentId,setContentId]=useState(null);const[approving,setApproving]=useState(false);const[previewPlat,setPreviewPlat]=useState(null);
   const[selPlats,setSelPlats]=useState(biz.plats);
   const im=(IMGM.find(m=>m.id===(biz.imageModel||"nano_banana_2"))||IMGM[0]).l;
   const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const raw=await r.json();console.log("[generate] raw response:", raw);// n8n may return {variants:{...}, image_url:...} or wrap in array
@@ -287,51 +315,46 @@ function PageCreate({biz,onDone}){
       </div>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
-      {Object.entries(result).filter(([k,v])=>PM[k]&&typeof v==="object"&&v!==null).map(([k,v])=>{const isVideo=v.video;const platLabel=PM[k]?.l;return <div key={k} style={{...cd,overflow:"hidden"}}>
-        <div style={{...r,justifyContent:"space-between",padding:"10px 16px",borderBottom:`1px solid ${BL}`}}>
-          <div style={{...r,gap:8}}><span style={{fontSize:12,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{platLabel}</span>{isVideo?<span style={{fontSize:10,fontWeight:600,color:"#16a34a",background:"#f0fdf4",padding:"2px 8px",borderRadius:4}}>{k==="instagram"?"Reel":k==="youtube"?"Short":"Video"}</span>:<span style={{fontSize:10,color:U,background:BL,padding:"2px 8px",borderRadius:4}}>Image</span>}</div>
-          <button onClick={()=>{setResult(null);doGen();}} style={{padding:"2px 8px",borderRadius:4,border:`1px solid ${B}`,background:W,fontSize:10,cursor:"pointer",color:U,minHeight:28}}>Regenerate</button>
-        </div>
-        <div style={{padding:"14px 16px"}}>
-          <div style={{display:"flex",gap:14}}>
-            {isVideo?<div style={{width:mob?80:120,height:mob?106:160,borderRadius:8,background:BL,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0,position:"relative"}}>
-              <div style={{width:28,height:28,borderRadius:14,background:W,border:`1px solid ${B}`,...r,justifyContent:"center"}}><svg width="12" height="12" viewBox="0 0 24 24" fill={T} stroke="none"><polygon points="8,5 20,12 8,19"/></svg></div>
-              <span style={{fontSize:10,color:U,marginTop:4}}>Preview</span>
-              <span style={{position:"absolute",bottom:6,right:6,background:"rgba(0,0,0,0.55)",color:"#fff",fontSize:9,padding:"1px 5px",borderRadius:3}}>{v.assets?.dur||"0:10"}</span>
-            </div>:<div style={{width:mob?80:120,height:mob?80:120,borderRadius:8,background:BL,...r,justifyContent:"center",flexShrink:0,overflow:"hidden",cursor:(v.image_url||result.image_url)?"zoom-in":"default"}} onClick={()=>{const u=v.image_url||result.image_url;if(u)setLightbox(u);}}>
-              {(v.image_url||result.image_url)?<img src={v.image_url||result.image_url} alt="Generated" style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<span style={{fontSize:10,color:U}}>Image</span>}
-            </div>}
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:13,color:M,whiteSpace:"pre-wrap",lineHeight:1.6}}>{v.text||v.caption||v.message||v.title}</div>
-              {v.hashtags&&<div style={{marginTop:6,fontSize:11,color:"#2563eb"}}>{v.hashtags.map(h=>"#"+h).join(" ")}</div>}
-              {!isVideo&&((biz.videoRatio||{})[k]||0)===0&&Object.values(biz.videoRatio||{}).some(v=>v>0)&&<div style={{marginTop:8,fontSize:10,color:U}}>Static image via fal.ai — video ratio is 0% for {platLabel}</div>}
+      {Object.entries(result).filter(([k,v])=>PM[k]&&typeof v==="object"&&v!==null).map(([k,v])=>{
+        const isVideo=v.video;const platLabel=PM[k]?.l;
+        const imgUrl=v.image_url||null;
+        const text=v.text||v.caption||v.message||v.title||"";
+        const tags=v.hashtags||[];
+        return <div key={k} style={{...cd,overflow:"hidden"}}>
+          {/* ── header: platform label + regenerate (not clickable area) ── */}
+          <div style={{...r,justifyContent:"space-between",padding:"10px 16px",borderBottom:`1px solid ${BL}`}}>
+            <div style={{...r,gap:8}}><span style={{fontSize:12,fontWeight:600,color:T,background:BL,padding:"2px 8px",borderRadius:4}}>{platLabel}</span>{isVideo?<span style={{fontSize:10,fontWeight:600,color:"#16a34a",background:"#f0fdf4",padding:"2px 8px",borderRadius:4}}>{k==="instagram"?"Reel":k==="youtube"?"Short":"Video"}</span>:<span style={{fontSize:10,color:U,background:BL,padding:"2px 8px",borderRadius:4}}>Image</span>}</div>
+            <button onClick={e=>{e.stopPropagation();setResult(null);doGen();}} style={{padding:"2px 8px",borderRadius:4,border:`1px solid ${B}`,background:W,fontSize:10,cursor:"pointer",color:U,minHeight:28}}>Regenerate</button>
+          </div>
+          {/* ── clickable body ── */}
+          <div onClick={()=>setPreviewPlat(k)} style={{padding:"14px 16px",cursor:"pointer",transition:"background .12s"}} onMouseEnter={e=>e.currentTarget.style.background=BL} onMouseLeave={e=>e.currentTarget.style.background=W}>
+            <div style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+              {/* thumbnail */}
+              {isVideo?<div style={{width:mob?72:100,height:mob?96:133,borderRadius:8,background:"#1a1a2e",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0,position:"relative"}}>
+                <div style={{width:26,height:26,borderRadius:13,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center"}}><svg width="10" height="10" viewBox="0 0 24 24" fill="#fff" stroke="none"><polygon points="8,5 20,12 8,19"/></svg></div>
+                <span style={{fontSize:9,color:"rgba(255,255,255,.5)",marginTop:4}}>{v.assets?.dur||"0:10"}</span>
+              </div>:
+              imgUrl?<img src={imgUrl} alt="" style={{width:mob?72:100,height:mob?72:100,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:
+              <div style={{width:mob?72:100,height:mob?72:100,borderRadius:8,background:BL,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:10,color:U}}>No image</span></div>}
+              {/* text preview (3 lines max) + expand hint */}
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,color:M,lineHeight:1.6,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>{text}</div>
+                {tags.length>0&&<div style={{marginTop:4,fontSize:11,color:"#2563eb",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tags.map(h=>"#"+h).join(" ")}</div>}
+                <div style={{marginTop:6,fontSize:11,color:U,display:"flex",alignItems:"center",gap:4}}>
+                  <span>View full post</span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={U} strokeWidth="2"><path d="M9 5l7 7-7 7"/></svg>
+                </div>
+              </div>
             </div>
           </div>
-          {isVideo&&<div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${BL}`}}>
-            <div style={{fontSize:11,fontWeight:600,color:T,marginBottom:6}}>Generated assets</div>
-            {[
-              {icon:"V",color:"#16a34a",bg:"#f0fdf4",label:`Video (ElevenCreative · direct from brief · ${v.assets?.dur||"10s"})`,ok:true},
-              {icon:"VO",color:"#7c3aed",bg:"#f5f3ff",label:`Voiceover (ElevenLabs TTS · ${(VOICES.find(vc=>vc.id===biz.voiceId)||VOICES[0]).name})`,ok:true},
-              {icon:"M",color:"#d97706",bg:"#fffbeb",label:`Music (ElevenLabs · ${(biz.musicStyle||"ambient").split("—")[0].trim()})`,ok:true},
-              {icon:"F",color:M,bg:BL,label:"Final MP4 (combined via ffmpeg)",ok:true},
-            ].map((a,i)=><div key={i} style={{...r,gap:8,padding:"6px 0",borderBottom:i<3?`1px solid ${BL}`:"none"}}>
-              <div style={{width:24,height:24,borderRadius:6,background:a.bg,...r,justifyContent:"center",flexShrink:0,fontSize:10,fontWeight:700,color:a.color}}>{a.icon}</div>
-              <span style={{fontSize:11,color:U,flex:1}}>{a.label}</span>
-              <span style={{fontSize:10,color:"#16a34a",fontWeight:600}}>Ready</span>
-            </div>)}
-            {v.voiceover&&<div style={{marginTop:8,padding:"8px 10px",borderRadius:6,background:BL}}>
-              <div style={{fontSize:10,fontWeight:600,color:M,marginBottom:2}}>Voiceover script</div>
-              <div style={{fontSize:11,color:U,lineHeight:1.5,fontStyle:"italic"}}>{v.voiceover}</div>
-            </div>}
-          </div>}
-        </div>
-      </div>})}
+        </div>;
+      })}
     </div>
+    {previewPlat&&result[previewPlat]&&<PlatformPreviewModal platform={previewPlat} variant={result[previewPlat]} onClose={()=>setPreviewPlat(null)}/>}
     {Object.values(biz.videoRatio||{}).some(v=>v>0)&&<div style={{...r,justifyContent:"space-between",padding:"10px 14px",marginTop:10,borderRadius:8,background:BL}}>
       <span style={{fontSize:11,color:U}}>Estimated generation cost</span>
       <span style={{fontSize:11,fontWeight:600,color:T}}>~$0.38 ({Object.entries(result).filter(([k])=>(biz.videoRatio||{})[k]>0&&result[k]?.video).length} video + {Object.entries(result).filter(([k])=>!((biz.videoRatio||{})[k]>0&&result[k]?.video)).length} image)</span>
     </div>}
-    {lightbox&&<ImageLightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
   </div>;
   return <div>
     <h1 style={{fontSize:mob?17:20,fontWeight:700,margin:"0 0 4px",color:T}}>Create content</h1>
