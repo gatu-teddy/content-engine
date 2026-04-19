@@ -57,11 +57,11 @@ router.post('/document/:businessId', upload.single('file'), async (req, res) => 
 
     // Extract text based on file type
     let extractedText = '';
-    if (ext === 'txt') {
+    if (['txt', 'md', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'json', 'csv', 'py'].includes(ext)) {
+      // Plain-text formats — read directly from buffer
       extractedText = req.file.buffer.toString('utf-8');
     } else {
-      // For PDF and DOCX, extraction happens in n8n or a separate service
-      // Store raw for now, flag for processing
+      // PDF and DOCX need a parser — store raw URL for now, Claude will receive the URL
       extractedText = '[PENDING_EXTRACTION]';
     }
 

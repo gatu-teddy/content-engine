@@ -28,6 +28,38 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ error: 'Failed to create content record' });
   }
 
+  // ── Fetch brand voice + context vault docs so Claude has full context ──
+  let brand_voice = '';
+  let context_documents = [];
+  let reference_image_urls = [];
+  try {
+    const [bizRow, docsRow, imgsRow] = await Promise.all([
+      pool.query(`SELECT brand_voice FROM businesses WHERE id = $1`, [business_id]),
+      pool.query(
+        `SELECT filename, file_type, extracted_text, file_url
+         FROM context_documents
+         WHERE business_id = $1
+         ORDER BY uploaded_at DESC`,
+        [business_id]
+      ),
+      pool.query(
+        `SELECT file_url, label FROM reference_images WHERE business_id = $1 ORDER BY uploaded_at DESC LIMIT 10`,
+        [business_id]
+      ),
+    ]);
+    brand_voice = bizRow.rows[0]?.brand_voice || '';
+    context_documents = docsRow.rows.map(d => ({
+      filename: d.filename,
+      type: d.file_type,
+      // Include extracted text if available, otherwise just the URL for reference
+      text: d.extracted_text && d.extracted_text !== '[PENDING_EXTRACTION]' ? d.extracted_text : null,
+      url: d.file_url,
+    }));
+    reference_image_urls = imgsRow.rows.map(r => ({ url: r.file_url, label: r.label }));
+  } catch (err) {
+    console.warn('[generate] Could not fetch context vault — continuing without it:', err.message);
+  }
+
   try {
     const response = await fetch(N8N_WEBHOOK, {
       method: 'POST',
@@ -35,6 +67,9 @@ router.post('/', async (req, res) => {
       body: JSON.stringify({
         content_id: contentId,
         business_id,
+        brand_voice,
+        context_documents,
+        reference_image_urls,
         brief,
         image_model: image_model || 'nano_banana_2',
         generate_image: generate_image !== false,
