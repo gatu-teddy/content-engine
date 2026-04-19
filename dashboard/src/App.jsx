@@ -261,7 +261,7 @@ function PageHome({biz}){
 
 function PageCreate({biz,onDone}){
   const{mob}=useMedia();
-  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");const[lightbox,setLightbox]=useState(null);
+  const[brief,setBrief]=useState("");const[gen,setGen]=useState(false);const[result,setResult]=useState(null);const[imgOn,setImgOn]=useState(true);const[schedTime,setSchedTime]=useState("");const[lightbox,setLightbox]=useState(null);const[contentId,setContentId]=useState(null);const[approving,setApproving]=useState(false);
   const[selPlats,setSelPlats]=useState(biz.plats);
   const im=(IMGM.find(m=>m.id===(biz.imageModel||"nano_banana_2"))||IMGM[0]).l;
   const doGen=async()=>{if(!brief.trim())return;setGen(true);try{const r=await apiFetch("/api/generate",{method:"POST",body:JSON.stringify({business_id:biz.id,brief:brief.trim(),image_model:biz.imageModel||"nano_banana_2",generate_image:imgOn,platforms:selPlats,scheduled_at:schedTime||null})});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"Generation failed");}const raw=await r.json();console.log("[generate] raw response:", raw);// n8n may return {variants:{...}, image_url:...} or wrap in array
@@ -271,14 +271,20 @@ function PageCreate({biz,onDone}){
       // attach image_url to each platform variant so display can use it
       const enriched={};
       Object.entries(variants).forEach(([k,v])=>{if(typeof v==="object"&&v!==null&&["instagram","facebook","x","tiktok","linkedin","youtube"].includes(k)){enriched[k]={...v,image_url};}});
+      setContentId(payload?.content_id||null);
       setResult(Object.keys(enriched).length?enriched:variants);}catch(e){alert("Generation failed: "+e.message);}finally{setGen(false);}};
   const smartSched=()=>{const now=new Date();const dow=now.getDay();const optH={instagram:[9,10,11,10,11,10,9],x:[10,8,9,9,8,8,10],facebook:[11,9,10,10,9,9,11],tiktok:[10,14,15,14,15,14,10],linkedin:[10,8,9,8,9,8,10],youtube:[14,13,14,13,12,12,13]};const p=selPlats.find(s=>s!=="off")||"instagram";const h=(optH[p]||[])[dow]||10;const d=new Date(now);if(h<=now.getHours())d.setDate(d.getDate()+1);d.setHours(h,0,0,0);setSchedTime(d.toISOString().slice(0,16))};
   const fillFromTpl=(name)=>{const t=TPLS.find(tp=>tp.name===name);if(t&&t.brief)setBrief(t.brief)};
   const togglePlat=(k)=>setSelPlats(p=>p.includes(k)?p.filter(x=>x!==k):[...p,k]);
+  const doDiscard=async()=>{if(contentId){apiFetch(`/api/content/${contentId}`,{method:"PUT",body:JSON.stringify({status:"rejected"})}).catch(()=>{});}setResult(null);setContentId(null);};
+  const doApprove=async()=>{setApproving(true);try{if(contentId){const imgUrl=Object.values(result).find(v=>v?.image_url)?.image_url||null;const r2=await apiFetch(`/api/content/${contentId}`,{method:"PUT",body:JSON.stringify({variants:result,image_url:imgUrl,status:schedTime?"scheduled":"approved",scheduled_at:schedTime||null})});if(!r2.ok){const e=await r2.json().catch(()=>({}));throw new Error(e.error||"Save failed");}}setResult(null);setBrief("");setContentId(null);onDone?.();}catch(e){alert("Failed to save: "+e.message);}finally{setApproving(false);}};
   if(result)return <div>
     <div style={{...(mob?{}:r),justifyContent:"space-between",marginBottom:18,gap:10}}>
       <h2 style={{fontSize:mob?17:18,fontWeight:700,margin:0,color:T}}>Generated content</h2>
-      <div style={{...r,gap:8}}><button onClick={()=>setResult(null)} style={bt}>Discard</button><button onClick={()=>{setResult(null);setBrief("");onDone?.()}} style={btD}>Approve & schedule</button></div>
+      <div style={{...r,gap:8,flexWrap:"wrap"}}>
+        <button onClick={doDiscard} style={btR}>Discard</button>
+        <button onClick={doApprove} disabled={approving} style={{...btD,opacity:approving?.6:1,minWidth:130}}>{approving?"Saving…":schedTime?"Approve & schedule":"Approve"}</button>
+      </div>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
       {Object.entries(result).filter(([k,v])=>PM[k]&&typeof v==="object"&&v!==null).map(([k,v])=>{const isVideo=v.video;const platLabel=PM[k]?.l;return <div key={k} style={{...cd,overflow:"hidden"}}>
@@ -1194,7 +1200,7 @@ export default function App(){
   const nav=[{id:"home",label:"Overview",icon:"home"},{id:"create",label:"Create",icon:"spark"},{id:"templates",label:"Templates",icon:"tpl"},{id:"calendar",label:"Calendar",icon:"cal"},{id:"history",label:"History",icon:"clock",badge:pc},{id:"intent",label:"Intent sniping",icon:"target",badge:ib>0?ib:0},{id:"trending",label:"Trending",icon:"trending"},{id:"connections",label:"Connections",icon:"link",dot:wc>0},{id:"vault",label:"Context vault",icon:"folder"},{id:"settings",label:"Settings",icon:"gear"}];
   const addBiz=async(name,voice)=>{const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+"-"+Date.now();const res=await apiFetch("/api/businesses",{method:"POST",body:JSON.stringify({display_name:name,slug,brand_voice:voice||"",enabled_platforms:["instagram","facebook"]})});if(!res.ok){alert("Failed to create business");return;}const db=await res.json();const nb=dbBizToUi(db);setBizList(p=>[...p,nb]);setBizId(nb.id);setAddModal(false);setPage("connections");};
   const removeBiz=async()=>{if(bizList.length<=1)return;await apiFetch(`/api/businesses/${bizId}`,{method:"DELETE"});const nx=bizList.find(b=>b.id!==bizId)?.id;setBizList(p=>p.filter(b=>b.id!==bizId));setBizId(nx);setRemoveModal(false);setPage("home")};
-  const rp=()=>{switch(page){case"home":return <PageHome biz={biz}/>;case"create":return <PageCreate biz={biz}/>;case"templates":return <PageTemplates biz={biz}/>;case"calendar":return <PageCalendar biz={biz}/>;case"history":return <PageHistory biz={biz}/>;case"intent":return <PageIntent biz={biz} onUpdate={upd}/>;case"trending":return <PageTrending biz={biz} onUpdate={upd}/>;case"connections":return <PageConnections biz={biz} onUpdate={upd}/>;case"vault":return <PageVault biz={biz}/>;case"settings":return <PageSettings biz={biz} onUpdate={upd}/>;default:return <PageHome biz={biz}/>}};
+  const rp=()=>{switch(page){case"home":return <PageHome biz={biz}/>;case"create":return <PageCreate biz={biz} onDone={()=>setPage("history")}/>;case"templates":return <PageTemplates biz={biz}/>;case"calendar":return <PageCalendar biz={biz}/>;case"history":return <PageHistory biz={biz}/>;case"intent":return <PageIntent biz={biz} onUpdate={upd}/>;case"trending":return <PageTrending biz={biz} onUpdate={upd}/>;case"connections":return <PageConnections biz={biz} onUpdate={upd}/>;case"vault":return <PageVault biz={biz}/>;case"settings":return <PageSettings biz={biz} onUpdate={upd}/>;default:return <PageHome biz={biz}/>}};
   const goPage=(id)=>{setPage(id);setSideOpen(false)};
 
   const showSidebar=!mob||sideOpen;

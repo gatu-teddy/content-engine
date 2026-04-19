@@ -64,7 +64,9 @@ router.post('/', async (req, res) => {
       return res.status(502).json({ error: 'Generation service returned invalid response', detail: text.slice(0, 200) });
     }
 
-    res.json(data);
+    // Inject content_id so the dashboard can approve/schedule the record
+    const payload = Array.isArray(data) ? data[0] : data;
+    res.json({ ...payload, content_id: contentId });
 
   } catch (err) {
     console.error('[generate] fetch error:', err.message);
