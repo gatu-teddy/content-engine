@@ -99,9 +99,19 @@ router.post('/', async (req, res) => {
       return res.status(502).json({ error: 'Generation service returned invalid response', detail: text.slice(0, 200) });
     }
 
-    // Inject content_id so the dashboard can approve/schedule the record
     const payload = Array.isArray(data) ? data[0] : data;
-    res.json({ ...payload, content_id: contentId });
+
+    // If n8n didn't return image_url (e.g. Parse Image Result branch didn't run),
+    // fall back to what was already saved in the DB by n8n's Save to Database node
+    let imageUrl = payload.image_url || null;
+    if (!imageUrl) {
+      try {
+        const dbRow = await pool.query(`SELECT image_url FROM content WHERE id = $1`, [contentId]);
+        imageUrl = dbRow.rows[0]?.image_url || null;
+      } catch { /* non-fatal */ }
+    }
+
+    res.json({ ...payload, content_id: contentId, image_url: imageUrl });
 
   } catch (err) {
     console.error('[generate] fetch error:', err.message);
