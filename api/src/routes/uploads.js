@@ -3,6 +3,21 @@ import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../db.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
+// Lazy-load heavy parsers so startup is unaffected if pkg not yet installed
+let _pdfParse, _mammoth;
+async function extractPdf(buffer) {
+  if (!_pdfParse) _pdfParse = require('pdf-parse');
+  const data = await _pdfParse(buffer);
+  return data.text || '';
+}
+async function extractDocx(buffer) {
+  if (!_mammoth) _mammoth = require('mammoth');
+  const result = await _mammoth.extractRawText({ buffer });
+  return result.value || '';
+}
 
 const router = Router();
 
@@ -58,11 +73,23 @@ router.post('/document/:businessId', upload.single('file'), async (req, res) => 
     // Extract text based on file type
     let extractedText = '';
     if (['txt', 'md', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'json', 'csv', 'py'].includes(ext)) {
-      // Plain-text formats — read directly from buffer
       extractedText = req.file.buffer.toString('utf-8');
+    } else if (ext === 'pdf') {
+      try {
+        extractedText = await extractPdf(req.file.buffer);
+      } catch (err) {
+        console.error('PDF extraction error:', err.message);
+        extractedText = '[EXTRACTION_FAILED: ' + err.message + ']';
+      }
+    } else if (ext === 'docx') {
+      try {
+        extractedText = await extractDocx(req.file.buffer);
+      } catch (err) {
+        console.error('DOCX extraction error:', err.message);
+        extractedText = '[EXTRACTION_FAILED: ' + err.message + ']';
+      }
     } else {
-      // PDF and DOCX need a parser — store raw URL for now, Claude will receive the URL
-      extractedText = '[PENDING_EXTRACTION]';
+      extractedText = '[UNSUPPORTED_FORMAT]';
     }
 
     const result = await pool.query(
