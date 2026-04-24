@@ -393,22 +393,34 @@ const SUGGESTED_TPLS = {
   ],
 };
 
+function dbTplToUi(t){return{id:t.id,name:t.name,freq:t.frequency,active:t.active,perf:Math.round(t.performance_score||0),fires:t.fire_count||0,plats:t.platforms||[],brief:t.brief_template||'',img:t.image_prompt_template||'',vars:(t.dynamic_variables||[]).filter(v=>v.type==='rotate').map(v=>({name:v.name,values:v.values||[]})),};}
 function PageTemplates({biz}){
   const{mob}=useMedia();
   const[view,setView]=useState("list");
   const[editing,setEditing]=useState(null);
   const[suggesting,setSuggesting]=useState(false);
   const[suggested,setSuggested]=useState(null);
-  const[tpls,setTpls]=useState(TPLS);
+  const[tpls,setTpls]=useState([]);
+  const[loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    if(!biz?.id)return;
+    setLoading(true);
+    apiFetch(`/api/templates?business_id=${biz.id}`)
+      .then(r=>r.json()).then(data=>{setTpls((Array.isArray(data)?data:[]).map(dbTplToUi));setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[biz?.id]);
 
   const bizType = biz.name.includes("Beauty")||biz.name.includes("Nail") ? "beauty" : biz.name.includes("Property")||biz.name.includes("Real") ? "realestate" : "saas";
   const suggestions = SUGGESTED_TPLS[bizType] || SUGGESTED_TPLS.saas;
 
   const startSuggest=()=>{setSuggesting(true);setTimeout(()=>{setSuggesting(false);setSuggested(suggestions);setView("suggest")},2000)};
-  const addFromSuggestion=(s)=>{const nt={id:"t"+Date.now(),name:s.name,freq:s.freq.replace("_"," "),active:true,perf:0,fires:0,plats:s.plats,brief:s.brief,vars:s.vars,img:s.img};setTpls(p=>[...p,nt]);setView("list")};
-  const startNew=()=>{setEditing({id:"t"+Date.now(),name:"",brief:"",vars:[],img:"",plats:["instagram"],freq:"weekly",active:true,perf:0,fires:0});setView("edit")};
+  const addFromSuggestion=async(s)=>{const res=await apiFetch('/api/templates',{method:'POST',body:JSON.stringify({business_id:biz.id,name:s.name,brief_template:s.brief,image_prompt_template:s.img||null,platforms:s.plats,frequency:s.freq,active:true})});if(res.ok){const saved=await res.json();setTpls(p=>[...p,dbTplToUi(saved)]);}setView("list");};
+  const startNew=()=>{setEditing({id:"new_"+Date.now(),name:"",brief:"",vars:[],img:"",plats:["instagram"],freq:"weekly",active:true,perf:0,fires:0});setView("edit")};
   const startEdit=(t)=>{setEditing({...t});setView("edit")};
-  const saveEdit=()=>{if(!editing.name.trim())return;setTpls(p=>{const exists=p.find(t=>t.id===editing.id);return exists?p.map(t=>t.id===editing.id?editing:t):[...p,editing]});setEditing(null);setView("list")};
+  const saveEdit=async()=>{if(!editing.name.trim())return;const isNew=editing.id.startsWith("new_");const body={name:editing.name,brief_template:editing.brief,image_prompt_template:editing.img||null,platforms:editing.plats,frequency:editing.freq,active:editing.active};const res=isNew?await apiFetch('/api/templates',{method:'POST',body:JSON.stringify({business_id:biz.id,...body})}):await apiFetch(`/api/templates/${editing.id}`,{method:'PUT',body:JSON.stringify(body)});if(res.ok){const saved=await res.json();const ui=dbTplToUi(saved);setTpls(p=>isNew?[...p,ui]:p.map(t=>t.id===editing.id?ui:t));}setEditing(null);setView("list");};
+  const toggleActive=async(t)=>{const res=await apiFetch(`/api/templates/${t.id}`,{method:'PUT',body:JSON.stringify({active:!t.active})});if(res.ok)setTpls(p=>p.map(x=>x.id===t.id?{...x,active:!x.active}:x));};
+  const deleteTpl=async(id)=>{if(!confirm('Delete this template?'))return;await apiFetch(`/api/templates/${id}`,{method:'DELETE'});setTpls(p=>p.filter(t=>t.id!==id));};
 
   if(view==="suggest"&&suggested) return <div>
     <RHeader title="Suggested templates" subtitle={`Based on ${biz.name}'s context and industry`}>
@@ -479,14 +491,21 @@ function PageTemplates({biz}){
         <button onClick={startNew} style={btD}>+ New template</button>
       </div>
     </div>
+    {loading&&<div style={{textAlign:"center",padding:"32px 0",color:U,fontSize:13}}>Loading templates…</div>}
+    {!loading&&tpls.length===0&&<div style={{textAlign:"center",padding:"32px 0",color:U,fontSize:13}}>No templates yet. Create one or use Suggest templates.</div>}
     {tpls.map(t=><div key={t.id} style={{...cd,padding:"12px 16px",marginBottom:8}}>
       <div style={{...(mob?{display:"flex",flexDirection:"column",gap:8}:r),justifyContent:"space-between"}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{...r,gap:8,marginBottom:2,flexWrap:"wrap"}}><span style={{fontSize:13,fontWeight:600,color:T}}>{t.name}</span><span style={{fontSize:10,fontWeight:500,padding:"2px 6px",borderRadius:4,color:t.active?"#16a34a":U,background:t.active?"#f0fdf4":BL}}>{t.active?"Active":"Paused"}</span></div>
           <div style={{fontSize:11,color:U}}>{t.freq} · {t.fires} fires · <Pl p={t.plats}/></div>
-          {t.brief&&<div style={{fontSize:11,color:M,marginTop:4,lineHeight:1.4}}>{t.brief}</div>}
+          {t.brief&&<div style={{fontSize:11,color:M,marginTop:4,lineHeight:1.4,maxHeight:36,overflow:"hidden"}}>{t.brief.slice(0,120)}{t.brief.length>120?"…":""}</div>}
         </div>
-        <div style={{...r,gap:10,flexShrink:0}}><Pb v={t.perf}/><button onClick={()=>startEdit(t)} style={bt}>Edit</button></div>
+        <div style={{...r,gap:8,flexShrink:0}}>
+          <Pb v={t.perf}/>
+          <button onClick={()=>toggleActive(t)} style={{...bt,fontSize:11,padding:"4px 10px"}}>{t.active?"Pause":"Activate"}</button>
+          <button onClick={()=>startEdit(t)} style={bt}>Edit</button>
+          <button onClick={()=>deleteTpl(t.id)} style={{...bt,color:"#ef4444",borderColor:"#fecaca",fontSize:11,padding:"4px 10px"}}>Delete</button>
+        </div>
       </div>
     </div>)}
   </div>;
