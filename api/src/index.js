@@ -16,7 +16,7 @@ import engagementRoutes from './routes/engagement.js';
 import scheduleRoutes from './routes/schedule.js';
 import dubbingRoutes from './routes/dubbing.js';
 import generateRoutes, { cronGenerateHandler } from './routes/generate.js';
-import { authMiddleware } from './middleware/auth.js';
+import { authMiddleware, cronOrAuthMiddleware } from './middleware/auth.js';
 
 dotenv.config();
 
@@ -37,7 +37,7 @@ app.use('/api/businesses', authMiddleware, businessRoutes);
 app.use('/api/content', authMiddleware, contentRoutes);
 app.use('/api/uploads', authMiddleware, uploadRoutes);
 app.use('/api/v1/alex', authMiddleware, alexRoutes);
-app.use('/api/templates', authMiddleware, templateRoutes);
+app.use('/api/templates', cronOrAuthMiddleware, templateRoutes);
 app.use('/api/webhooks', authMiddleware, webhookRoutes);
 app.use('/api/intent', authMiddleware, intentRoutes);
 app.use('/api/trending', authMiddleware, trendingRoutes);
